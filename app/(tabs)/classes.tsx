@@ -1,7 +1,10 @@
 import { router } from "expo-router";
 import { Building, Clock, MagnifyingGlass, User } from "phosphor-react-native";
-import { useState } from "react";
-import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { authService, generalService, lampService } from "../services";
+import { SettingsResponse, StudentClass } from "../types/api";
+import { getErrorMessage } from "../utils/errorHandler";
 
 type Course = { id: string; code: string; name: string; instructor: string; schedule: string; time: string; room: string; color: string; };
 
@@ -30,25 +33,149 @@ const getTimeValue = (time: string): number => {
   return hours * 60 + parseInt(minute);
 };
 
-const coursesData: Course[] = [
-  { id: '40922', code: 'CSP421A', name: 'CS Thesis Writing 2 (LEC)', instructor: 'Erlinda Abarintos', schedule: 'T', time: '4:00 PM - 5:00 PM', room: 'GC Main 508', color: '#3b82f6', },
-  { id: '40923', code: 'CSP421L', name: 'CS Thesis Writing 2 (LAB)', instructor: 'Erlinda Abarintos', schedule: 'MT', time: '6:00 PM - 9:00 PM', room: 'GC Main 508', color: '#3b82f6', },
-  { id: '40924', code: 'CSE412A', name: 'CS Elective 6 (LEC) - AR/VR Systems', instructor: 'Loudel Manaloto', schedule: 'Th', time: '4:00 PM - 6:00 PM', room: 'GC Main 411', color: '#ec4899', },
-  { id: '40925', code: 'CSE412L', name: 'CS Elective 6 (LAB) - AR/VR Systems', instructor: 'Loudel Manaloto', schedule: 'F', time: '9:00 AM - 12:00 PM', room: 'GC Main 507', color: '#ec4899', },
-  { id: '40926', code: 'CSE413A', name: 'CS Elective 7 (LEC) - Artificial Intelligence & Machine Learning', instructor: 'Melner Balce', schedule: 'MT', time: '5:00 PM - 6:00 PM', room: 'GC Main 505', color: '#8b5cf6', },
-  { id: '40927', code: 'CSE413L', name: 'CS Elective 7 (LAB) - Artificial Intelligence & Machine Learning', instructor: 'Melner Balce', schedule: 'Sat', time: '7:00 AM - 10:00 AM', room: 'GC Main 519', color: '#8b5cf6', },
-  { id: '40928', code: 'CSC414', name: 'CS Seminars and Educational Trips', instructor: 'Erlinda Abarintos', schedule: 'F', time: '5:00 PM - 8:00 PM', room: 'GC Main 508', color: '#f59e0b', },
+// Color palette for courses
+const courseColors = [
+  '#3b82f6', '#ec4899', '#8b5cf6', '#f59e0b', '#10b981', '#f97316', 
+  '#06b6d4', '#a855f7', '#ef4444', '#84cc16'
 ];
 
-const courses = coursesData.sort((a, b) => {
-  const dayDiff = getDayOrder(a.schedule) - getDayOrder(b.schedule);
-  if (dayDiff !== 0) return dayDiff;
-  return getTimeValue(a.time) - getTimeValue(b.time);
-});
+// Map API day format to schedule format
+const formatDaySchedule = (dayFld: string): string => {
+  if (!dayFld) return '';
+  
+  // API format: "Tue", "Mon,Tue", "Sat", etc.
+  // UI format: "T", "MT", "Sat", etc.
+  const dayMap: Record<string, string> = {
+    'Mon': 'M',
+    'Tue': 'T',
+    'Wed': 'W',
+    'Thu': 'Th',
+    'Fri': 'F',
+    'Sat': 'Sat',
+    'Sun': 'Sun',
+  };
+  
+  return dayFld.split(',').map(day => dayMap[day.trim()] || day.trim()).join('');
+};
+
+// Transform API class to Course type
+const transformClassToCourse = (cls: StudentClass, index: number): Course => {
+  const schedule = formatDaySchedule(cls.day_fld || '');
+  const time = `${cls.starttime_fld || ''} - ${cls.endtime_fld || ''}`;
+  
+  // Extract instructor name (remove title if present)
+  const instructor = cls.faculty_fld?.trim() || '';
+  
+  return {
+    id: cls.classcode_fld || '',
+    code: cls.subjcode_fld || '',
+    name: cls.subjdesc_fld || '',
+    instructor,
+    schedule,
+    time,
+    room: cls.room_fld || '',
+    color: courseColors[index % courseColors.length],
+  };
+};
 
 export default function Classes() {
   const [search, setSearch] = useState("");
   const [isFocused, setIsFocused] = useState(false);
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Fetch classes data
+  const fetchClasses = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      // Step 1: Get current user (student ID)
+      const user = await authService.getCurrentUser();
+      if (!user) {
+        setError('Please login to view your classes');
+        setLoading(false);
+        return;
+      }
+
+      const studentId = user.id;
+
+      // Step 2: Get settings (academic year & semester)
+      const settingsResponse = await generalService.getSettings();
+      if (settingsResponse.status.rem !== 'success' || !settingsResponse.data) {
+        setError('Failed to load settings');
+        setLoading(false);
+        return;
+      }
+
+      const settings = settingsResponse.data as SettingsResponse;
+      const activeSetting = settings.setting;
+      const academicYear = activeSetting?.acadyear_fld || '';
+      const semester = activeSetting?.sem_fld || '';
+
+      if (!academicYear || !semester) {
+        setError('Academic year or semester not found');
+        setLoading(false);
+        return;
+      }
+
+      // Step 3: Get student classes
+      const classesResponse = await lampService.getStudentClasses({
+        p_id: studentId,
+        p_ay: academicYear,
+        p_sem: String(semester),
+      });
+
+      if (classesResponse.status.rem !== 'success') {
+        const errorMsg = classesResponse.status.msg || 'Failed to load classes';
+        if (classesResponse.status.sys && classesResponse.status.sys.includes('Table')) {
+          setError('Service temporarily unavailable. Please try again later.');
+        } else {
+          setError(errorMsg);
+        }
+        setLoading(false);
+        return;
+      }
+
+      if (!classesResponse.data || !Array.isArray(classesResponse.data)) {
+        setError('No classes data returned');
+        setLoading(false);
+        return;
+      }
+
+      const classes = classesResponse.data as StudentClass[];
+      
+      if (classes.length === 0) {
+        setError('No classes found for this academic year and semester');
+        setLoading(false);
+        return;
+      }
+
+      // Transform and sort classes
+      const transformedCourses = classes.map((cls, index) => transformClassToCourse(cls, index));
+      const sortedCourses = transformedCourses.sort((a, b) => {
+        const dayDiff = getDayOrder(a.schedule) - getDayOrder(b.schedule);
+        if (dayDiff !== 0) return dayDiff;
+        return getTimeValue(a.time) - getTimeValue(b.time);
+      });
+
+      setCourses(sortedCourses);
+    } catch (err: any) {
+      console.error('Error fetching classes:', err);
+      if (err?.data?.status?.sys && err.data.status.sys.includes('Table')) {
+        setError('Service temporarily unavailable. Please try again later.');
+      } else {
+        setError(getErrorMessage(err));
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchClasses();
+  }, []);
 
   const filteredCourses = courses.filter((course) =>
     course.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -65,7 +192,29 @@ export default function Classes() {
         </View>
       </View>
 
-      {filteredCourses.length > 0 ? (
+      {/* Loading state */}
+      {loading && (
+        <View className="flex-1 items-center justify-center">
+          <ActivityIndicator size="large" color="#4285F4" />
+          <Text className="text-millionGrey text-base mt-4">Loading classes...</Text>
+        </View>
+      )}
+
+      {/* Error state */}
+      {!loading && error && (
+        <View className="flex-1 items-center justify-center px-6">
+          <Text className="text-red-600 text-base mb-2 text-center">{error}</Text>
+          <Pressable
+            onPress={fetchClasses}
+            className="bg-metalDeluxe rounded-full px-6 py-3 mt-4"
+          >
+            <Text className="text-white text-base">Retry</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {/* Classes list */}
+      {!loading && !error && filteredCourses.length > 0 && (
         <ScrollView className="flex-1 px-6 mb-2" showsVerticalScrollIndicator={false} >
           <View className="py-4">
             {filteredCourses.map((course) => (
@@ -110,9 +259,14 @@ export default function Classes() {
             ))}
           </View>
         </ScrollView>
-      ) : (
+      )}
+
+      {/* Empty state */}
+      {!loading && !error && filteredCourses.length === 0 && (
         <View className="flex-1 items-center justify-center">
-          <Text className="text-millionGrey text-base">No courses found.</Text>
+          <Text className="text-millionGrey text-base">
+            {search ? 'No courses found matching your search.' : 'No courses found.'}
+          </Text>
         </View>
       )}
     </View>

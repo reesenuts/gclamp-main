@@ -2,6 +2,7 @@ import { router } from "expo-router";
 import { Camera, SignOut, User, X } from "phosphor-react-native";
 import { Alert, Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { authService } from "../services";
 
 type ProfileSettingsProps = {
   visible: boolean;
@@ -50,9 +51,19 @@ export default function ProfileSettings({
         {
           text: 'Logout',
           style: 'destructive',
-          onPress: () => {
-            onClose();
-            router.replace('/login');
+          onPress: async () => {
+            try {
+              // Clear authentication tokens and user data
+              await authService.logout();
+              onClose();
+              // Navigate to login screen
+              router.replace('/');
+            } catch (error) {
+              console.error('Logout error:', error);
+              // Still navigate even if logout fails
+              onClose();
+              router.replace('/');
+            }
           },
         },
       ]

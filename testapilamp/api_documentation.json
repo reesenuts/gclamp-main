@@ -1,0 +1,174 @@
+{
+  "base_url": "http://192.168.1.2/testapilamp/student/lamp.php",
+  "auth": {
+    "type": "JWT Bearer",
+    "header": "Authorization: Bearer <token>",
+    "expires": "1 hour"
+  },
+  "request_format": {
+    "method": "POST",
+    "body": {
+      "payload": {},
+      "panel": "optional",
+      "device": "optional",
+      "log": {
+        "username": "string",
+        "fullname": "string",
+        "dept": "string",
+        "program": "string",
+        "panel": "string",
+        "device": "string"
+      }
+    }
+  },
+  "response_format": {
+    "status": {
+      "rem": "success|failed",
+      "msg": "string",
+      "sys": "string"
+    },
+    "data": {},
+    "stamp": "ISO 8601"
+  },
+  "endpoints": {
+    "auth": {
+      "userlogin": "no_auth_required"
+    },
+    "general": [
+      "getsettings",
+      "getapps",
+      "getpositions",
+      "getdepartments",
+      "getprograms",
+      "getannouncements",
+      "getregions",
+      "getprovinces/{region_id}",
+      "getcitymun/{province_id}",
+      "getbrgy/{citymun_id}",
+      "getbugreports",
+      "getmessages",
+      "savebugreport"
+    ],
+    "uploads": {
+      "uploadimage/{studid}/{filename}/{filetype}": "multipart/form-data",
+      "uploadfile/{p1}/{p2}/{p3}/{p4}": "multipart/form-data",
+      "uploadsign/{p1}/{p2}/{p3}/{p4}": "multipart/form-data",
+      "upload/{ay}/{sem}/{userid}": "multipart/form-data",
+      "deletefile": "POST",
+      "download": "POST - returns binary"
+    },
+    "student": {
+      "profile": [
+        "getprofile",
+        "getenrollhistory",
+        "getavailablecourses"
+      ],
+      "updates": [
+        "updateinfo",
+        "updateeducation",
+        "updatefamily",
+        "updatehealth",
+        "updategovt",
+        "updateothers"
+      ],
+      "enrollment": [
+        "enlist"
+      ]
+    },
+    "lamp_faculty": {
+      "loading": [
+        "updateexcess",
+        "updatefacultyexcess",
+        "updateofficialtime",
+        "updateconsultationtime",
+        "updateotherinfo"
+      ],
+      "evaluation": [
+        "getresulteval"
+      ]
+    },
+    "lamp_classes": {
+      "classes": [
+        "getfacultyclasses",
+        "getstudentclasses",
+        "getstudentsinclass"
+      ],
+      "posts": [
+        "getclasspost",
+        "addclasspost",
+        "editclasspost"
+      ],
+      "comments": [
+        "getclasscomments",
+        "addclasscomment",
+        "editclasscomment"
+      ],
+      "activities": [
+        "getclassactivities",
+        "addclassactivity",
+        "editclassactivity",
+        "gettodolist",
+        "getallsubmissions"
+      ],
+      "resources": [
+        "getclassresources",
+        "addclassresource",
+        "editclassresource"
+      ],
+      "topics": [
+        "getclasstopics"
+      ],
+      "submissions": [
+        "getclasssubmissions",
+        "getclasssubmissionlist",
+        "getstudentworks",
+        "getsubmission",
+        "editclasssubmission",
+        "savework"
+      ],
+      "quiz": [
+        "getquiz",
+        "draftquiz",
+        "savequiz",
+        "editquiz",
+        "addanswer"
+      ],
+      "messages": [
+        "addmsg",
+        "getmsg"
+      ],
+      "evaluation": [
+        "submiteval"
+      ]
+    }
+  },
+  "file_types": {
+    "1": "Prospectus",
+    "2": "Grades",
+    "3": "Hepa Screen",
+    "4": "Profile Photo",
+    "5": "Residency Cert",
+    "6": "Honorable Dismissal",
+    "7": "Good Moral",
+    "8": "TOR/F138",
+    "9": "ID Card",
+    "10": "Medical Cert",
+    "11": "Birth Cert",
+    "12": "Vaccine Card"
+  },
+  "notes": {
+    "all_endpoints_require_auth_except": ["userlogin"],
+    "all_endpoints_use_POST": true,
+    "datetime_fld_auto_set_on_add": true,
+    "upload_endpoints_return_filepath": true,
+    "log_object_required_for": [
+      "updateinfo",
+      "updateeducation",
+      "updatefamily",
+      "updatehealth",
+      "updategovt",
+      "updateothers",
+      "enlist"
+    ]
+  }
+}

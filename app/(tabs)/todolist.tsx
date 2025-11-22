@@ -1,6 +1,9 @@
 import { router } from "expo-router";
-import { useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import { authService, generalService, lampService } from "../services";
+import { SettingsResponse, StudentClass, TodoListItem } from "../types/api";
+import { getErrorMessage } from "../utils/errorHandler";
 
 type TodoStatus = 'not_started' | 'missing' | 'completed';
 
@@ -18,60 +21,6 @@ type TodoItem = {
   grade?: number;
   submittedDate?: string;
   postedDate?: string;
-};
-
-// course data mapping
-const courseData: Record<string, { name: string; color: string }> = {
-  'CSP421A': { name: 'CS Thesis Writing 2 (LEC)', color: '#3b82f6' },
-  'CSP421L': { name: 'CS Thesis Writing 2 (LAB)', color: '#3b82f6' },
-  'CSE412A': { name: 'CS Elective 6 (LEC) - AR/VR Systems', color: '#ec4899' },
-  'CSE412L': { name: 'CS Elective 6 (LAB) - AR/VR Systems', color: '#ec4899' },
-  'CSE413A': { name: 'CS Elective 7 (LEC) - Artificial Intelligence & Machine Learning', color: '#8b5cf6' },
-  'CSE413L': { name: 'CS Elective 7 (LAB) - Artificial Intelligence & Machine Learning', color: '#8b5cf6' },
-  'CSC414': { name: 'CS Seminars and Educational Trips', color: '#f59e0b' },
-};
-
-// parse date string to extract date and time
-const parseDate = (dateStr: string): { date: string; time: string } => {
-  // format: "Nov 15, 2025, 11:59 PM"
-  const parts = dateStr.split(', ');
-  if (parts.length >= 3) {
-    const monthDay = parts[0]; // "Nov 15"
-    const year = parts[1]; // "2025"
-    const time = parts[2]; // "11:59 PM"
-    
-    // parse month abbreviation and day
-    const monthAbbrMap: Record<string, number> = {
-      'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3, 'May': 4, 'Jun': 5,
-      'Jul': 6, 'Aug': 7, 'Sep': 8, 'Oct': 9, 'Nov': 10, 'Dec': 11
-    };
-    
-    const monthDayParts = monthDay.split(' ');
-    const monthAbbr = monthDayParts[0]; // "Nov"
-    const day = parseInt(monthDayParts[1]); // 15
-    const yearNum = parseInt(year); // 2025
-    
-    // create date object
-    const dateObj = new Date(yearNum, monthAbbrMap[monthAbbr] || 0, day);
-    
-    // check if date is valid
-    if (isNaN(dateObj.getTime())) {
-      return { date: dateStr, time: time };
-    }
-    
-    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-    
-    const dayName = dayNames[dateObj.getDay()];
-    const monthName = monthNames[dateObj.getMonth()];
-    const dayNum = dateObj.getDate();
-    
-    return {
-      date: `${monthName} ${dayNum}, ${dayName}`,
-      time: time,
-    };
-  }
-  return { date: dateStr, time: '' };
 };
 
 // map activity status to todo status
@@ -93,6 +42,20 @@ const mapStatus = (status: string): TodoStatus => {
 export default function ToDoList() {
   // active tab state
   const [activeTab, setActiveTab] = useState<TodoStatus>('not_started');
+  
+  // API data states
+  const [todos, setTodos] = useState<TodoItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Course mapping for colors (will be populated from classes)
+  const [courseDataMap, setCourseDataMap] = useState<Record<string, { name: string; color: string }>>({});
+  
+  // Color palette for courses
+  const courseColors = [
+    '#3b82f6', '#ec4899', '#8b5cf6', '#f59e0b', '#10b981', '#f97316', 
+    '#06b6d4', '#a855f7', '#ef4444', '#84cc16'
+  ];
 
   // map todo status to activity status
   const mapTodoStatusToActivityStatus = (status: TodoStatus): string => {
@@ -107,6 +70,220 @@ export default function ToDoList() {
         return 'not_started';
     }
   };
+
+  // Format date from API (MySQL datetime format) to display format
+  const formatDateFromAPI = (dateStr: string): { date: string; time: string; formatted: string } => {
+    if (!dateStr) return { date: '', time: '', formatted: '' };
+    
+    try {
+      const date = new Date(dateStr);
+      if (isNaN(date.getTime())) return { date: dateStr, time: '', formatted: dateStr };
+      
+      const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+      
+      const dayName = dayNames[date.getDay()];
+      const monthName = monthNames[date.getMonth()];
+      const dayNum = date.getDate();
+      const year = date.getFullYear();
+      
+      // Format time
+      const hours = date.getHours();
+      const minutes = date.getMinutes();
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      const displayHours = hours % 12 || 12;
+      const displayMinutes = minutes.toString().padStart(2, '0');
+      const time = `${displayHours}:${displayMinutes} ${ampm}`;
+      
+      // Format date for grouping
+      const dateForGrouping = `${monthName} ${dayNum}, ${dayName}`;
+      
+      // Format for display (e.g., "Nov 15, 2025, 11:59 PM")
+      const monthAbbr = monthName.substring(0, 3);
+      const formatted = `${monthAbbr} ${dayNum}, ${year}, ${time}`;
+      
+      return {
+        date: dateForGrouping,
+        time,
+        formatted
+      };
+    } catch (e) {
+      return { date: dateStr, time: '', formatted: dateStr };
+    }
+  };
+
+  // Transform API todo item to TodoItem
+  const transformTodoItem = (apiTodo: TodoListItem, classInfo?: StudentClass): TodoItem => {
+    const classcode = apiTodo.classcode_fld || '';
+    const courseInfo = courseDataMap[classcode] || {
+      name: apiTodo.subjdesc_fld || classcode,
+      color: courseColors[Math.abs(classcode.split('').reduce((a, b) => a + b.charCodeAt(0), 0)) % courseColors.length]
+    };
+    
+    // Determine status based on submission
+    let status: TodoStatus = 'not_started';
+    if (apiTodo.issubmitted_fld === 1) {
+      status = 'completed';
+    } else if (apiTodo.deadline_fld) {
+      const deadline = new Date(apiTodo.deadline_fld);
+      const now = new Date();
+      if (now > deadline) {
+        status = 'missing';
+      }
+    }
+    
+    const deadlineDate = formatDateFromAPI(apiTodo.deadline_fld || '');
+    const postedDate = formatDateFromAPI(apiTodo.datetime_fld || '');
+    const submittedDate = apiTodo.datetime_submitted ? formatDateFromAPI(apiTodo.datetime_submitted).formatted : undefined;
+    
+    return {
+      id: apiTodo.actcode_fld || '',
+      courseName: courseInfo.name,
+      courseCode: apiTodo.subjcode_fld || classcode,
+      activityName: apiTodo.title_fld || '',
+      dueDate: deadlineDate.formatted,
+      dueTime: deadlineDate.time,
+      color: courseInfo.color,
+      status,
+      date: deadlineDate.date,
+      points: apiTodo.totalscore_fld || 0,
+      grade: apiTodo.isscored_fld === 1 ? apiTodo.score_fld : undefined,
+      submittedDate,
+      postedDate: postedDate.formatted,
+    };
+  };
+
+  // Fetch todo list data
+  const fetchTodoList = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      // Step 1: Get current user (student ID)
+      const user = await authService.getCurrentUser();
+      if (!user) {
+        setError('Please login to view your todo list');
+        setLoading(false);
+        return;
+      }
+
+      const studentId = user.id;
+
+      // Step 2: Get settings (academic year & semester)
+      const settingsResponse = await generalService.getSettings();
+      if (settingsResponse.status.rem !== 'success' || !settingsResponse.data) {
+        setError('Failed to load settings');
+        setLoading(false);
+        return;
+      }
+
+      const settings = settingsResponse.data as SettingsResponse;
+      const activeSetting = settings.setting;
+      const academicYear = activeSetting?.acadyear_fld || '';
+      const semester = activeSetting?.sem_fld || '';
+
+      if (!academicYear || !semester) {
+        setError('Academic year or semester not found');
+        setLoading(false);
+        return;
+      }
+
+      // Step 3: Get student classes
+      const classesResponse = await lampService.getStudentClasses({
+        p_id: studentId,
+        p_ay: academicYear,
+        p_sem: String(semester), // Ensure semester is a string
+      });
+
+      if (classesResponse.status.rem !== 'success') {
+        // Check if it's a database/system error
+        const errorMsg = classesResponse.status.msg || 'Failed to load classes';
+        // Don't expose SQL errors to users, show generic message
+        if (classesResponse.status.sys && classesResponse.status.sys.includes('Table')) {
+          setError('Service temporarily unavailable. Please try again later.');
+        } else {
+          setError(errorMsg);
+        }
+        setLoading(false);
+        return;
+      }
+
+      // Check if data exists and is an array
+      if (!classesResponse.data) {
+        setError('No classes data returned');
+        setLoading(false);
+        return;
+      }
+
+      const classes = Array.isArray(classesResponse.data) 
+        ? classesResponse.data as StudentClass[]
+        : [];
+
+      if (classes.length === 0) {
+        setError('No classes found for this academic year and semester');
+        setLoading(false);
+        return;
+      }
+      
+      // Step 4: Build course data map and extract class codes
+      const courseMap: Record<string, { name: string; color: string }> = {};
+      const classCodes: string[] = [];
+
+      classes.forEach((cls, index) => {
+        const classcode = cls.classcode_fld;
+        if (classcode) {
+          classCodes.push(classcode);
+          courseMap[classcode] = {
+            name: cls.subjdesc_fld || cls.subjcode_fld || classcode,
+            color: courseColors[index % courseColors.length],
+          };
+        }
+      });
+
+      setCourseDataMap(courseMap);
+
+      // Step 5: Format class codes as "(40292, 40297, 40298)"
+      const formattedClassCodes = `(${classCodes.join(', ')})`;
+
+      // Step 6: Get todo list
+      const todoResponse = await lampService.getTodoList({
+        p_classcodes: formattedClassCodes,
+        p_id: studentId,
+      });
+
+      if (todoResponse.status.rem !== 'success' || !todoResponse.data) {
+        setError('No todos found');
+        setLoading(false);
+        return;
+      }
+
+      const apiTodos = todoResponse.data as TodoListItem[];
+      
+      // Step 7: Transform API data to TodoItem format
+      const transformedTodos = apiTodos.map(todo => {
+        const classInfo = classes.find(c => c.classcode_fld === todo.classcode_fld);
+        return transformTodoItem(todo, classInfo);
+      });
+
+      setTodos(transformedTodos);
+    } catch (err: any) {
+      console.error('Error fetching todo list:', err);
+      
+      // Check if it's a database/system error (don't expose SQL errors to users)
+      if (err?.data?.status?.sys && err.data.status.sys.includes('Table')) {
+        setError('Service temporarily unavailable. Please try again later.');
+      } else {
+        // Use the error handler utility to get user-friendly message
+        setError(getErrorMessage(err));
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchTodoList();
+  }, []);
 
   // handle todo click - navigate to activity detail
   const handleTodoClick = (todo: TodoItem) => {
@@ -128,207 +305,7 @@ export default function ToDoList() {
     });
   };
 
-  // todo items data - aggregated from all courses with mock dates
-  const [todos] = useState<TodoItem[]>([
-    // CS Thesis Writing 2 (LEC) - CSP421A
-    {
-      id: 'csp421a-1',
-      courseName: 'CS Thesis Writing 2 (LEC)',
-      courseCode: 'CSP421A',
-      activityName: 'Chapter 3 Draft Submission',
-      dueDate: 'Dec 5, 2025, 11:59 PM',
-      dueTime: '11:59 PM',
-      color: '#3b82f6',
-      status: 'not_started' as TodoStatus,
-      date: parseDate('Dec 5, 2025, 11:59 PM').date,
-      points: 100,
-      postedDate: 'Nov 28, 2025, 2:30 PM',
-    },
-    {
-      id: 'csp421a-2',
-      courseName: 'CS Thesis Writing 2 (LEC)',
-      courseCode: 'CSP421A',
-      activityName: 'Chapter 2 Submission',
-      dueDate: 'Nov 1, 2025, 11:59 PM',
-      dueTime: '11:59 PM',
-      color: '#3b82f6',
-      status: 'completed' as TodoStatus,
-      date: parseDate('Nov 1, 2025, 11:59 PM').date,
-      points: 100,
-      grade: 95,
-      submittedDate: 'Nov 1, 2025',
-      postedDate: 'Oct 25, 2025, 3:15 PM',
-    },
-    {
-      id: 'csp421a-3',
-      courseName: 'CS Thesis Writing 2 (LEC)',
-      courseCode: 'CSP421A',
-      activityName: 'Literature Review',
-      dueDate: 'Oct 20, 2025, 11:59 PM',
-      dueTime: '11:59 PM',
-      color: '#3b82f6',
-      status: 'missing' as TodoStatus,
-      date: parseDate('Oct 20, 2025, 11:59 PM').date,
-      points: 100,
-      postedDate: 'Oct 5, 2025, 1:45 PM',
-    },
-    // CS Thesis Writing 2 (LAB) - CSP421L
-    {
-      id: 'csp421l-1',
-      courseName: 'CS Thesis Writing 2 (LAB)',
-      courseCode: 'CSP421L',
-      activityName: 'Chapter 3 Draft Submission',
-      dueDate: 'Dec 5, 2025, 11:59 PM',
-      dueTime: '11:59 PM',
-      color: '#3b82f6',
-      status: 'not_started' as TodoStatus,
-      date: parseDate('Dec 5, 2025, 11:59 PM').date,
-      points: 100,
-      postedDate: 'Nov 28, 2025, 2:30 PM',
-    },
-    {
-      id: 'csp421l-2',
-      courseName: 'CS Thesis Writing 2 (LAB)',
-      courseCode: 'CSP421L',
-      activityName: 'Chapter 2 Submission',
-      dueDate: 'Nov 1, 2025, 11:59 PM',
-      dueTime: '11:59 PM',
-      color: '#3b82f6',
-      status: 'completed' as TodoStatus,
-      date: parseDate('Nov 1, 2025, 11:59 PM').date,
-      points: 100,
-      grade: 95,
-      submittedDate: 'Nov 1, 2025',
-      postedDate: 'Oct 25, 2025, 3:15 PM',
-    },
-    // CS Elective 6 (LEC) - CSE412A
-    {
-      id: 'cse412a-1',
-      courseName: 'CS Elective 6 (LEC) - AR/VR Systems',
-      courseCode: 'CSE412A',
-      activityName: 'Midterm Quiz',
-      dueDate: 'Dec 10, 2025, 11:59 PM',
-      dueTime: '11:59 PM',
-      color: '#ec4899',
-      status: 'not_started' as TodoStatus,
-      date: parseDate('Dec 10, 2025, 11:59 PM').date,
-      points: 50,
-      postedDate: 'Nov 30, 2025, 9:00 AM',
-    },
-    {
-      id: 'cse412a-2',
-      courseName: 'CS Elective 6 (LEC) - AR/VR Systems',
-      courseCode: 'CSE412A',
-      activityName: 'AR/VR Fundamentals Assignment',
-      dueDate: 'Nov 25, 2025, 11:59 PM',
-      dueTime: '11:59 PM',
-      color: '#ec4899',
-      status: 'not_started' as TodoStatus,
-      date: parseDate('Nov 25, 2025, 11:59 PM').date,
-      points: 75,
-      postedDate: 'Nov 18, 2025, 2:00 PM',
-    },
-    // CS Elective 6 (LAB) - CSE412L
-    {
-      id: 'cse412l-1',
-      courseName: 'CS Elective 6 (LAB) - AR/VR Systems',
-      courseCode: 'CSE412L',
-      activityName: 'AR/VR Project Proposal',
-      dueDate: 'Dec 2, 2025, 11:59 PM',
-      dueTime: '11:59 PM',
-      color: '#ec4899',
-      status: 'not_started' as TodoStatus,
-      date: parseDate('Dec 2, 2025, 11:59 PM').date,
-      points: 100,
-      postedDate: 'Nov 20, 2025, 10:00 AM',
-    },
-    // CS Elective 7 (LEC) - CSE413A
-    {
-      id: 'cse413a-1',
-      courseName: 'CS Elective 7 (LEC) - Artificial Intelligence & Machine Learning',
-      courseCode: 'CSE413A',
-      activityName: 'Midterm Quiz',
-      dueDate: 'Dec 10, 2025, 11:59 PM',
-      dueTime: '11:59 PM',
-      color: '#8b5cf6',
-      status: 'not_started' as TodoStatus,
-      date: parseDate('Dec 10, 2025, 11:59 PM').date,
-      points: 50,
-      postedDate: 'Nov 30, 2025, 9:00 AM',
-    },
-    {
-      id: 'cse413a-2',
-      courseName: 'CS Elective 7 (LEC) - Artificial Intelligence & Machine Learning',
-      courseCode: 'CSE413A',
-      activityName: 'Neural Networks Fundamentals',
-      dueDate: 'Nov 28, 2025, 11:59 PM',
-      dueTime: '11:59 PM',
-      color: '#8b5cf6',
-      status: 'not_started' as TodoStatus,
-      date: parseDate('Nov 28, 2025, 11:59 PM').date,
-      points: 80,
-      postedDate: 'Nov 20, 2025, 3:00 PM',
-    },
-    {
-      id: 'cse413a-3',
-      courseName: 'CS Elective 7 (LEC) - Artificial Intelligence & Machine Learning',
-      courseCode: 'CSE413A',
-      activityName: 'Research Methodology Assignment',
-      dueDate: 'Oct 28, 2025, 11:59 PM',
-      dueTime: '11:59 PM',
-      color: '#8b5cf6',
-      status: 'missing' as TodoStatus,
-      date: parseDate('Oct 28, 2025, 11:59 PM').date,
-      points: 50,
-      postedDate: 'Oct 15, 2025, 10:00 AM',
-    },
-    // CS Elective 7 (LAB) - CSE413L
-    {
-      id: 'cse413l-1',
-      courseName: 'CS Elective 7 (LAB) - Artificial Intelligence & Machine Learning',
-      courseCode: 'CSE413L',
-      activityName: 'Machine Learning Project',
-      dueDate: 'Dec 15, 2025, 11:59 PM',
-      dueTime: '11:59 PM',
-      color: '#8b5cf6',
-      status: 'not_started' as TodoStatus,
-      date: parseDate('Dec 15, 2025, 11:59 PM').date,
-      points: 150,
-      postedDate: 'Nov 25, 2025, 1:00 PM',
-    },
-    // CS Seminars and Educational Trips - CSC414
-    {
-      id: 'csc414-1',
-      courseName: 'CS Seminars and Educational Trips',
-      courseCode: 'CSC414',
-      activityName: 'Team Composition for CSC414',
-      dueDate: 'Dec 1, 2025, 4:59 PM',
-      dueTime: '4:59 PM',
-      color: '#f59e0b',
-      status: 'not_started' as TodoStatus,
-      date: parseDate('Dec 1, 2025, 4:59 PM').date,
-      points: 30,
-      postedDate: 'Nov 20, 2025, 11:00 AM',
-    },
-    {
-      id: 'csc414-2',
-      courseName: 'CS Seminars and Educational Trips',
-      courseCode: 'CSC414',
-      activityName: 'Seminar Reflection Paper',
-      dueDate: 'Nov 22, 2025, 11:59 PM',
-      dueTime: '11:59 PM',
-      color: '#f59e0b',
-      status: 'not_started' as TodoStatus,
-      date: parseDate('Nov 22, 2025, 11:59 PM').date,
-      points: 50,
-      postedDate: 'Nov 10, 2025, 2:00 PM',
-    },
-  ].map(todo => ({
-    ...todo,
-    dueTime: parseDate(todo.dueDate).time,
-  })));
-
-  // filter todos by active tab
+  // Filter todos by active tab
   const filteredTodos = todos.filter(todo => todo.status === activeTab);
 
   // group todos by date
@@ -399,7 +376,29 @@ export default function ToDoList() {
       {/* todo list */}
       <ScrollView className="flex-1 mb-2" showsVerticalScrollIndicator={false}>
         <View className="p-6">
-          {sortedDates.map((date) => (
+          {/* Loading state */}
+          {loading && (
+            <View className="items-center justify-center py-20">
+              <ActivityIndicator size="large" color="#4285F4" />
+              <Text className="text-millionGrey text-base mt-4">Loading todos...</Text>
+            </View>
+          )}
+
+          {/* Error state */}
+          {!loading && error && (
+            <View className="items-center justify-center py-20">
+              <Text className="text-red-600 text-base mb-2">{error}</Text>
+              <Pressable
+                onPress={fetchTodoList}
+                className="bg-metalDeluxe rounded-full px-6 py-3 mt-4"
+              >
+                <Text className="text-white text-base">Retry</Text>
+              </Pressable>
+            </View>
+          )}
+
+          {/* Todo list */}
+          {!loading && !error && sortedDates.map((date) => (
             <View key={date} className="mb-6">
               {/* date header - red for missing tab */}
               <Text className={`text-sm font-semibold mb-2 ${activeTab === 'missing' ? 'text-mettwurst' : 'text-millionGrey'}`}>
@@ -459,7 +458,7 @@ export default function ToDoList() {
           ))}
 
           {/* empty state */}
-          {sortedDates.length === 0 && (
+          {!loading && !error && sortedDates.length === 0 && (
             <View className="items-center justify-center py-10">
               <Text className="text-millionGrey text-base">
                 No {activeTab === 'not_started' ? 'tasks' : activeTab === 'missing' ? 'missing tasks' : 'completed tasks'} found

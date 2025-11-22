@@ -80,3 +80,60 @@ export interface ApiError {
   data?: ApiResponse<any>;
 }
 
+// Settings Response
+export interface SettingsResponse {
+  setting: {
+    acadyear_fld?: string;
+    sem_fld?: string;
+    [key: string]: any;
+  };
+  acadyear: Array<{
+    acadyear_fld: string;
+    sem_fld: string;
+    [key: string]: any;
+  }>;
+  enlistment?: any;
+  evaluation?: any;
+}
+
+// Student Class Response
+export interface StudentClass {
+  classcode_fld: string;
+  subjcode_fld: string;
+  subjdesc_fld: string;
+  day_fld: string;
+  starttime_fld: string;
+  endtime_fld: string;
+  room_fld: string;
+  block_fld: string;
+  ay_fld: string;
+  sem_fld: string;
+  email_fld: string;
+  empcode_fld: string;
+  faculty_fld: string;
+  [key: string]: any;
+}
+
+// Todo List Item (from API)
+export interface TodoListItem {
+  actcode_fld: string;
+  classcode_fld: string;
+  subjcode_fld?: string;
+  subjdesc_fld?: string;
+  title_fld: string;
+  desc_fld?: string;
+  totalscore_fld: number;
+  deadline_fld: string;
+  datetime_fld: string;
+  datesched_fld?: string;
+  type_fld?: string;
+  recipient_fld?: string;
+  // Submission related fields
+  submitcode_fld?: string;
+  issubmitted_fld?: number;
+  isscored_fld?: number;
+  score_fld?: number;
+  datetime_submitted?: string;
+  [key: string]: any;
+}
+
