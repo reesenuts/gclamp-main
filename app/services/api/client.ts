@@ -17,7 +17,7 @@ class ApiClient {
   private client: AxiosInstance;
   private token: string | null = null;
   private tokenExpires: number | null = null;
-  private refreshPromise: Promise<string> | null = null;
+  private refreshPromise: Promise<string | null> | null = null;
 
   constructor() {
     this.client = axios.create({
@@ -197,10 +197,22 @@ class ApiClient {
     // The API expects: lamp.php?request=endpoint
     const url = `${API_CONFIG.BASE_URL}?request=${endpoint}`;
 
+    // Debug logging (remove in production)
+    if (__DEV__) {
+      console.log('API Request:', {
+        url,
+        method: 'POST',
+        body: JSON.stringify(body, null, 2),
+      });
+    }
+
     try {
       const response = await this.client.post<ApiResponse<T>>(url, body);
       return response.data;
     } catch (error) {
+      if (__DEV__) {
+        console.error('API Error:', error);
+      }
       throw createApiError(error);
     }
   }
