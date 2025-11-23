@@ -204,6 +204,51 @@ export default function ClassFeed({ courseCode, classcode, instructor, highlight
     };
   };
 
+  // Helper function to fetch all comments for a post (top-level + replies)
+  const fetchAllCommentsForPost = async (postId: string): Promise<Comment[]> => {
+    try {
+      // Fetch top-level comments (commentcode_fld = 'com')
+      const commentsResponse = await lampService.getClassComments({
+        p_actioncode: postId,
+        p_commentcode: 'com',
+      });
+
+      let topLevelComments: any[] = [];
+      if (commentsResponse.status.rem === 'success' && commentsResponse.data) {
+        topLevelComments = Array.isArray(commentsResponse.data) ? commentsResponse.data : [];
+      }
+
+      // Fetch replies for each top-level comment
+      // Replies have commentcode_fld = 'rep' and actioncode_fld = parent comment's recno_fld
+      const commentsWithReplies = await Promise.all(
+        topLevelComments.map(async (comment: any) => {
+          try {
+            const commentRecno = comment.recno_fld?.toString() || '';
+            const repliesResponse = await lampService.getClassComments({
+              p_actioncode: commentRecno,
+              p_commentcode: 'rep',
+            });
+
+            let replies: any[] = [];
+            if (repliesResponse.status.rem === 'success' && repliesResponse.data) {
+              replies = Array.isArray(repliesResponse.data) ? repliesResponse.data : [];
+            }
+
+            return { ...comment, replies: replies.length > 0 ? replies : undefined };
+          } catch (err) {
+            return { ...comment, replies: undefined };
+          }
+        })
+      );
+
+      return commentsWithReplies.map(transformComment);
+    } catch (err: any) {
+      console.error('Error fetching all comments for post:', err);
+      return [];
+    }
+  };
+
+
   // Fetch posts and comments
   useEffect(() => {
     const fetchPosts = async () => {
@@ -239,22 +284,7 @@ export default function ClassFeed({ courseCode, classcode, instructor, highlight
             const postId = apiPost.recno_fld?.toString() || apiPost.postcode_fld?.toString() || '';
             
             try {
-              const commentsResponse = await lampService.getClassComments({
-                p_actioncode: postId,
-                p_commentcode: '', // Empty to get all comments for this post
-              });
-
-              let comments: Comment[] = [];
-              // Handle both success and "no records" cases
-              if (commentsResponse.status.rem === 'success' && commentsResponse.data) {
-                const apiComments = Array.isArray(commentsResponse.data) ? commentsResponse.data : [];
-                comments = apiComments.map(transformComment);
-              } else if (commentsResponse.status.msg?.includes('No Records') || 
-                         commentsResponse.status.msg?.includes('no records')) {
-                // No comments is not an error, just return empty array
-                comments = [];
-              }
-
+              const comments = await fetchAllCommentsForPost(postId);
               return transformPost(apiPost, comments);
             } catch (err: any) {
               // Check if error is "no records" - that's okay, just means no comments
@@ -305,14 +335,15 @@ export default function ClassFeed({ courseCode, classcode, instructor, highlight
     if (!newPostContent.trim() || !actualClasscode || !currentUser) return;
 
     try {
-      const now = new Date().toISOString();
+      // Send exactly 5 parameters - backend will add datetime_fld automatically
+      // The stored procedure expects: p_content, p_id, p_classcode, p_withfile, p_dir, p_date
+      // The backend's saveCommon adds datetime_fld which should map to p_date
       const response = await lampService.addClassPost({
         p_content: newPostContent.trim(),
         p_id: currentUser.id,
         p_classcode: actualClasscode,
         p_withfile: 0,
         p_dir: '',
-        p_date: now,
       });
 
       if (response.status.rem === 'success') {
@@ -327,15 +358,7 @@ export default function ClassFeed({ courseCode, classcode, instructor, highlight
             apiPosts.map(async (apiPost: any) => {
               const postId = apiPost.recno_fld?.toString() || '';
               try {
-                const commentsResponse = await lampService.getClassComments({
-                  p_actioncode: postId,
-                  p_commentcode: '',
-                });
-                let comments: Comment[] = [];
-                if (commentsResponse.status.rem === 'success' && commentsResponse.data) {
-                  const apiComments = Array.isArray(commentsResponse.data) ? commentsResponse.data : [];
-                  comments = apiComments.map(transformComment);
-                }
+                const comments = await fetchAllCommentsForPost(postId);
                 return transformPost(apiPost, comments);
               } catch {
                 return transformPost(apiPost, []);
@@ -363,59 +386,104 @@ export default function ClassFeed({ courseCode, classcode, instructor, highlight
     if (!commentText?.trim() || !actualClasscode || !currentUser) return;
 
     try {
-      const now = new Date().toISOString();
+      // Send exactly 5 parameters - backend will add datetime_fld automatically
+      // The stored procedure expects: p_content, p_id, p_classcode, p_actioncode, p_ctype, p_date
+      // The backend's saveCommon adds datetime_fld which should map to p_date
+      // Note: p_commentcode is NOT needed for top-level comments (only for replies)
       const response = await lampService.addClassComment({
         p_content: commentText.trim(),
         p_id: currentUser.id,
         p_classcode: actualClasscode,
         p_actioncode: postId,
-        p_ctype: 'comment', // or 'reply' for replies
-        p_date: now,
+        p_ctype: 'comment',
       });
 
       if (response.status.rem === 'success') {
-        // Refresh comments for this post
-        try {
-          const commentsResponse = await lampService.getClassComments({
-            p_actioncode: postId,
-            p_commentcode: '',
+        // Clear comment input immediately for better UX
+        setCommentInputs({ ...commentInputs, [postId]: '' });
+
+        // The addClassComment response already contains all comments for the post
+        // Use the response data directly instead of making another API call
+        if (response.data && Array.isArray(response.data)) {
+          const apiComments = response.data;
+          
+          // Structure comments with replies (if any)
+          // Comments have actioncode_fld = postId, replies have actioncode_fld = comment recno_fld
+          const topLevelComments: any[] = [];
+          const repliesMap: { [key: string]: any[] } = {};
+
+          apiComments.forEach((comment: any) => {
+            // Check if this is a reply (actioncode_fld should match a comment's recno_fld, not the postId)
+            // For top-level comments, actioncode_fld should equal the postId
+            const isReply = comment.actioncode_fld !== postId && 
+                           apiComments.some((c: any) => c.recno_fld?.toString() === comment.actioncode_fld?.toString());
+            
+            if (isReply) {
+              const parentId = comment.actioncode_fld?.toString();
+              if (parentId) {
+                if (!repliesMap[parentId]) {
+                  repliesMap[parentId] = [];
+                }
+                repliesMap[parentId].push(comment);
+              }
+            } else {
+              // Top-level comment
+              topLevelComments.push(comment);
+            }
           });
 
-          if (commentsResponse.status.rem === 'success' && commentsResponse.data) {
-            const apiComments = Array.isArray(commentsResponse.data) ? commentsResponse.data : [];
-            const comments = apiComments.map(transformComment);
+          // Attach replies to their parent comments
+          const structuredComments = topLevelComments.map(comment => {
+            const commentId = comment.recno_fld?.toString();
+            if (commentId && repliesMap[commentId]) {
+              return { ...comment, replies: repliesMap[commentId] };
+            }
+            return comment;
+          });
 
+          const comments = structuredComments.map(transformComment);
+
+          // Ensure comments section is visible
+          setShowComments({ ...showComments, [postId]: true });
+
+          // Update posts with new comments
     setPosts(posts.map(post => {
       if (post.id === postId) {
-                return { ...post, comments };
-              }
-              return post;
-            }));
-          } else if (commentsResponse.status.msg?.includes('No Records') || 
-                     commentsResponse.status.msg?.includes('no records')) {
-            // No comments - set empty array
-            setPosts(posts.map(post => {
-              if (post.id === postId) {
-                return { ...post, comments: [] };
-              }
-              return post;
-            }));
-          }
-        } catch (err: any) {
-          // Handle "no records" error gracefully
-          const errorMsg = err?.message || err?.data?.message || '';
-          if (errorMsg.includes('No Records') || errorMsg.includes('no records') || err?.status === 404) {
-            setPosts(posts.map(post => {
-              if (post.id === postId) {
-                return { ...post, comments: [] };
+              return { ...post, comments };
+            }
+            return post;
+          }));
+        } else {
+          // Fallback: If response doesn't have comments, try fetching them
+          try {
+            const commentsResponse = await lampService.getClassComments({
+              p_actioncode: postId,
+              p_commentcode: '',
+            });
+
+            if (commentsResponse.status.rem === 'success' && commentsResponse.data) {
+              const apiComments = Array.isArray(commentsResponse.data) ? commentsResponse.data : [];
+              const comments = apiComments.map(transformComment);
+
+              setPosts(posts.map(post => {
+                if (post.id === postId) {
+                  return { ...post, comments };
+                }
+                return post;
+              }));
+            } else {
+              // No comments found
+              setPosts(posts.map(post => {
+                if (post.id === postId) {
+                  return { ...post, comments: [] };
       }
       return post;
     }));
+            }
+          } catch (err: any) {
+            console.error('Error fetching comments after add:', err);
           }
         }
-
-    // clear comment input
-    setCommentInputs({ ...commentInputs, [postId]: '' });
       } else {
         Alert.alert('Error', response.status.msg || 'Failed to add comment');
       }
@@ -451,60 +519,37 @@ export default function ClassFeed({ courseCode, classcode, instructor, highlight
     if (!replyText?.trim() || !actualClasscode || !currentUser) return;
 
     try {
-      const now = new Date().toISOString();
+      // For replies, use commentId as actioncode (the parent comment)
+      // Send exactly 5 parameters - backend will add datetime_fld automatically
+      // The stored procedure expects: p_content, p_id, p_classcode, p_actioncode, p_ctype, p_date
+      // The backend's saveCommon adds datetime_fld which should map to p_date
       const response = await lampService.addClassComment({
         p_content: replyText.trim(),
         p_id: currentUser.id,
         p_classcode: actualClasscode,
-        p_actioncode: postId,
+        p_actioncode: commentId, // Use commentId for replies (parent comment)
         p_ctype: 'reply',
-        p_date: now,
       });
 
       if (response.status.rem === 'success') {
-        // Refresh comments for this post
-        try {
-          const commentsResponse = await lampService.getClassComments({
-            p_actioncode: postId,
-            p_commentcode: '',
-          });
+        // Clear reply input immediately for better UX
+        setReplyInputs({ ...replyInputs, [commentId]: '' });
+        setShowReplyInputs({ ...showReplyInputs, [commentId]: false });
 
-          if (commentsResponse.status.rem === 'success' && commentsResponse.data) {
-            const apiComments = Array.isArray(commentsResponse.data) ? commentsResponse.data : [];
-            const comments = apiComments.map(transformComment);
+        // Small delay to ensure database commit completes
+        await new Promise(resolve => setTimeout(resolve, 300));
 
-    setPosts(posts.map(post => {
-      if (post.id === postId) {
-                return { ...post, comments };
-              }
-              return post;
-            }));
-          } else if (commentsResponse.status.msg?.includes('No Records') || 
-                     commentsResponse.status.msg?.includes('no records')) {
-            // No comments - set empty array
-            setPosts(posts.map(post => {
-              if (post.id === postId) {
-                return { ...post, comments: [] };
-              }
-              return post;
-            }));
+        // Fetch all comments for the post (top-level + replies) to ensure we have the complete structure
+        // The addClassComment response for replies might only contain replies for that comment
+        const comments = await fetchAllCommentsForPost(postId);
+
+        // Use functional update to ensure we have the latest state
+        setPosts(prevPosts => prevPosts.map(post => {
+          if (post.id === postId) {
+            return { ...post, comments };
           }
-        } catch (err: any) {
-          // Handle "no records" error gracefully
-          const errorMsg = err?.message || err?.data?.message || '';
-          if (errorMsg.includes('No Records') || errorMsg.includes('no records') || err?.status === 404) {
-            setPosts(posts.map(post => {
-              if (post.id === postId) {
-                return { ...post, comments: [] };
-      }
-      return post;
-    }));
-          }
-        }
-
-    // clear reply input
-    setReplyInputs({ ...replyInputs, [commentId]: '' });
-    setShowReplyInputs({ ...showReplyInputs, [commentId]: false });
+          return post;
+        }));
       } else {
         Alert.alert('Error', response.status.msg || 'Failed to add reply');
       }

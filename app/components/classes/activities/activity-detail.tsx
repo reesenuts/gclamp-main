@@ -395,14 +395,14 @@ export default function ActivityDetail() {
         return;
       }
 
-      const now = new Date().toISOString();
+      // Backend's saveCommon method adds datetime_fld automatically
+      // So we don't need to send p_date
       const response = await lampService.addClassComment({
         p_content: newComment.trim(),
         p_id: user.id,
         p_classcode: classcode,
         p_actioncode: activity.id,
         p_ctype: 'comment',
-        p_date: now,
       });
 
       if (response.status.rem === 'success') {
