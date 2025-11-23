@@ -1,5 +1,7 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
+import { authService } from "../services";
+import { User } from "../types/api";
 import ProfileSettings from "./profile-settings";
 
 interface HeaderProps {
@@ -7,20 +9,34 @@ interface HeaderProps {
   subtitle?: string;
 }
 
-// current student data - using real data from codebase
-const currentStudent = {
-  name: 'PARANTAR, LEE PARKER',
-  email: '202211523@gordoncollege.edu.ph',
-  studentId: '202211523',
-};
-
 // get initials from name
 const getInitials = (name: string) => {
+  if (!name) return '??';
   return name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
 };
 
 export default function Header({ title, subtitle }: HeaderProps) {
   const [isProfileModalVisible, setIsProfileModalVisible] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
+
+  // Fetch current user data
+  useEffect(() => {
+    const loadUser = async () => {
+      try {
+        const currentUser = await authService.getCurrentUser();
+        setUser(currentUser);
+      } catch (error) {
+        console.error('Error loading user:', error);
+      }
+    };
+
+    loadUser();
+  }, []);
+
+  // Get user display data with fallbacks
+  const userName = user?.fullname || '';
+  const userEmail = user?.emailadd || '';
+  const userId = user?.id || '';
 
   return (
     <>
@@ -38,7 +54,7 @@ export default function Header({ title, subtitle }: HeaderProps) {
         >
           <View className="w-12 h-12 rounded-full bg-millionGrey/10 border border-crystalBell items-center justify-center">
             <Text className="text-metalDeluxe font-bold text-base">
-              {getInitials(currentStudent.name)}
+              {getInitials(userName)}
             </Text>
           </View>
         </Pressable>
@@ -47,9 +63,9 @@ export default function Header({ title, subtitle }: HeaderProps) {
       <ProfileSettings
         visible={isProfileModalVisible}
         onClose={() => setIsProfileModalVisible(false)}
-        studentName={currentStudent.name}
-        studentEmail={currentStudent.email}
-        studentId={currentStudent.studentId}
+        studentName={userName}
+        studentEmail={userEmail}
+        studentId={userId}
       />
     </>
   );
