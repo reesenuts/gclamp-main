@@ -50,6 +50,32 @@ class ApiClient {
       async (error: AxiosError<ApiResponse>) => {
         const originalRequest = error.config as AxiosRequestConfig & { _retry?: boolean };
 
+        // Check if this is a "No Records" response - treat as success with empty data
+        const errorData = error.response?.data;
+        const errorMsg = errorData?.status?.msg || '';
+        const isNoRecords = errorMsg.includes('No Records') || 
+                           errorMsg.includes('no records') || 
+                           errorMsg.includes('No records');
+        
+        if (isNoRecords && error.response?.status === 404) {
+          // Return a success response with null data instead of rejecting
+          return {
+            data: {
+              status: {
+                rem: 'success' as const,
+                msg: errorMsg,
+                sys: errorData?.status?.sys || '',
+              },
+              data: null,
+              stamp: errorData?.stamp || new Date().toISOString(),
+            },
+            status: 200,
+            statusText: 'OK',
+            headers: error.response.headers,
+            config: error.config,
+          } as any;
+        }
+
         // Handle 401 Unauthorized - Token expired or invalid
         if (isAuthError(error) && !originalRequest._retry) {
           originalRequest._retry = true;

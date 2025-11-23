@@ -1,8 +1,11 @@
 import { router, useLocalSearchParams } from "expo-router";
 import { CaretLeft } from "phosphor-react-native";
 import { useEffect, useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { authService, generalService, lampService } from "../../services";
+import { SettingsResponse, StudentClass } from "../../types/api";
+import { getErrorMessage } from "../../utils/errorHandler";
 import ClassActivities from "./activities/class-activities";
 import ClassFeed from "./class-feed/class-feed";
 import ClassStudents from "./class-list";
@@ -11,8 +14,7 @@ import ClassResources from "./class-resources";
 
 type TabType = 'feed' | 'activities' | 'resources' | 'classlist' | 'details';
 
-// course details data
-const courseDetailsData: { [key: string]: {
+type CourseDetails = {
   classCode: string;
   courseCode: string;
   courseDescription: string;
@@ -25,105 +27,6 @@ const courseDetailsData: { [key: string]: {
   room: string;
   faculty: string;
   facultyEmail: string;
-} } = {
-  'CSP421A': {
-    classCode: '40922',
-    courseCode: 'CSP421A',
-    courseDescription: 'CS Thesis Writing 2 (LEC)',
-    lecUnits: 1.0,
-    labUnits: 0.0,
-    rleUnits: 0.0,
-    day: 'T',
-    time: '4:00 PM - 5:00 PM',
-    block: 'BSCS 4A',
-    room: 'GC Main 508',
-    faculty: 'Dr. Erlinda Abarintos',
-    facultyEmail: 'abarintos.erlinda@gordoncollege.edu.ph',
-  },
-  'CSP421L': {
-    classCode: '40923',
-    courseCode: 'CSP421L',
-    courseDescription: 'CS Thesis Writing 2 (LAB)',
-    lecUnits: 0.0,
-    labUnits: 2.0,
-    rleUnits: 0.0,
-    day: 'MT',
-    time: '6:00 PM - 9:00 PM',
-    block: 'BSCS 4A',
-    room: 'GC Main 508',
-    faculty: 'Dr. Erlinda Abarintos',
-    facultyEmail: 'abarintos.erlinda@gordoncollege.edu.ph',
-  },
-  'CSE412A': {
-    classCode: '40924',
-    courseCode: 'CSE412A',
-    courseDescription: 'CS Elective 6 (LEC) - AR/VR Systems',
-    lecUnits: 2.0,
-    labUnits: 0.0,
-    rleUnits: 0.0,
-    day: 'Th',
-    time: '4:00 PM - 6:00 PM',
-    block: 'BSCS 4A',
-    room: 'GC Main 411',
-    faculty: 'Mr. Loudel Manaloto',
-    facultyEmail: 'manaloto.loudel@gordoncollege.edu.ph',
-  },
-  'CSE412L': {
-    classCode: '40925',
-    courseCode: 'CSE412L',
-    courseDescription: 'CS Elective 6 (LAB) - AR/VR Systems',
-    lecUnits: 0.0,
-    labUnits: 1.0,
-    rleUnits: 0.0,
-    day: 'F',
-    time: '9:00 AM - 12:00 PM',
-    block: 'BSCS 4A',
-    room: 'GC Main 507',
-    faculty: 'Mr. Loudel Manaloto',
-    facultyEmail: 'manaloto.loudel@gordoncollege.edu.ph',
-  },
-  'CSE413A': {
-    classCode: '40926',
-    courseCode: 'CSE413A',
-    courseDescription: 'CS Elective 7 (LEC) - Artificial Intelligence & Machine Learning',
-    lecUnits: 2.0,
-    labUnits: 0.0,
-    rleUnits: 0.0,
-    day: 'MT',
-    time: '5:00 PM - 6:00 PM',
-    block: 'BSCS 4A',
-    room: 'GC Main 505',
-    faculty: 'Mr. Melner Balce',
-    facultyEmail: 'balce.melner@gordoncollege.edu.ph',
-  },
-  'CSE413L': {
-    classCode: '40927',
-    courseCode: 'CSE413L',
-    courseDescription: 'CS Elective 7 (LAB) - Artificial Intelligence & Machine Learning',
-    lecUnits: 0.0,
-    labUnits: 1.0,
-    rleUnits: 0.0,
-    day: 'Sat',
-    time: '7:00 AM - 10:00 AM',
-    block: 'BSCS 4A',
-    room: 'GC Main 519',
-    faculty: 'Mr. Melner Balce',
-    facultyEmail: 'balce.melner@gordoncollege.edu.ph',
-  },
-  'CSC414': {
-    classCode: '40928',
-    courseCode: 'CSC414',
-    courseDescription: 'CS Seminars and Educational Trips',
-    lecUnits: 3.0,
-    labUnits: 0.0,
-    rleUnits: 0.0,
-    day: 'F',
-    time: '5:00 PM - 8:00 PM',
-    block: 'BSCS 4A',
-    room: 'GC Main 508',
-    faculty: 'Dr. Erlinda Abarintos',
-    facultyEmail: 'abarintos.erlinda@gordoncollege.edu.ph',
-  },
 };
 
 export default function ClassDetail() {
@@ -131,6 +34,9 @@ export default function ClassDetail() {
   // get initial tab from params or default to 'feed'
   const initialTab = (params.initialTab as TabType) || 'feed';
   const [activeTab, setActiveTab] = useState<TabType>(initialTab);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [courseDetails, setCourseDetails] = useState<CourseDetails | null>(null);
 
   // update tab when initialTab param changes
   useEffect(() => {
@@ -146,33 +52,158 @@ export default function ClassDetail() {
     schedule: params.schedule as string,
     time: params.time as string,
     room: params.room as string,
+    classcode: params.classcode as string,
   };
 
-  // get course details from data or null
-  const courseDetails = courseDetailsData[course.code] || null;
+  // Format day schedule (e.g., "Mon,Tue" -> "MT")
+  const formatDaySchedule = (dayStr: string): string => {
+    if (!dayStr) return '';
+    const dayMap: { [key: string]: string } = {
+      'Mon': 'M',
+      'Tue': 'T',
+      'Wed': 'W',
+      'Thu': 'Th',
+      'Fri': 'F',
+      'Sat': 'S',
+      'Sun': 'Su',
+    };
+    return dayStr.split(',').map(d => dayMap[d.trim()] || d.trim()).join('');
+  };
+
+  // Format time (e.g., "4:00 PM" -> "4:00 PM - 5:00 PM")
+  const formatTimeRange = (start: string, end: string): string => {
+    if (!start || !end) return start || end || '';
+    return `${start} - ${end}`;
+  };
+
+  // Transform API class data to CourseDetails
+  const transformClassToDetails = (classData: StudentClass): CourseDetails => {
+    return {
+      classCode: classData.classcode_fld || '',
+      courseCode: classData.subjcode_fld || '',
+      courseDescription: classData.subjdesc_fld || '',
+      lecUnits: parseFloat(classData.lecunits_fld?.toString() || '0') || 0,
+      labUnits: parseFloat(classData.labunits_fld?.toString() || '0') || 0,
+      rleUnits: parseFloat(classData.rleunits_fld?.toString() || '0') || 0,
+      day: formatDaySchedule(classData.day_fld || ''),
+      time: formatTimeRange(classData.starttime_fld || '', classData.endtime_fld || ''),
+      block: classData.block_fld || '',
+      room: classData.room_fld || '',
+      faculty: classData.faculty_fld || '',
+      facultyEmail: classData.email_fld || '',
+    };
+  };
+
+  // Fetch class details from API
+  useEffect(() => {
+    const fetchClassDetails = async () => {
+      if (!course.classcode || activeTab !== 'details') {
+        return;
+      }
+
+      try {
+        setLoading(true);
+        setError(null);
+
+        // Get current user (student ID)
+        const user = await authService.getCurrentUser();
+        if (!user) {
+          setError('Please login to view class details');
+          setLoading(false);
+          return;
+        }
+
+        // Get settings (academic year & semester)
+        const settingsResponse = await generalService.getSettings();
+        if (settingsResponse.status.rem !== 'success' || !settingsResponse.data) {
+          setError('Failed to load settings');
+          setLoading(false);
+          return;
+        }
+
+        const settings = settingsResponse.data as SettingsResponse;
+        const activeSetting = settings.setting;
+        const academicYear = activeSetting?.acadyear_fld || '';
+        const semester = activeSetting?.sem_fld || '';
+
+        if (!academicYear || !semester) {
+          setError('Academic year or semester not found');
+          setLoading(false);
+          return;
+        }
+
+        // Get student classes
+        const classesResponse = await lampService.getStudentClasses({
+          p_id: user.id,
+          p_ay: academicYear,
+          p_sem: String(semester),
+        });
+
+        if (classesResponse.status.rem !== 'success' || !classesResponse.data) {
+          setError(classesResponse.status.msg || 'Failed to load class details');
+          setLoading(false);
+          return;
+        }
+
+        const classes = Array.isArray(classesResponse.data) ? classesResponse.data : [];
+        
+        // Find the class matching the classcode
+        const matchedClass = classes.find((cls: StudentClass) => 
+          cls.classcode_fld?.toString() === course.classcode
+        );
+
+        if (matchedClass) {
+          const details = transformClassToDetails(matchedClass);
+          setCourseDetails(details);
+        } else {
+          setError('Class details not found');
+        }
+      } catch (err: any) {
+        console.error('Error fetching class details:', err);
+        setError(getErrorMessage(err));
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    // Only fetch when details tab is active
+    if (activeTab === 'details') {
+      fetchClassDetails();
+    }
+  }, [course.classcode, activeTab]);
 
   // render content based on active tab
   const renderContent = () => {
     switch (activeTab) {
       case 'feed':
         return <ClassFeed 
-          courseCode={course.code} 
+          courseCode={course.code}
+          classcode={params.classcode as string}
           instructor={course.instructor}
           highlightPostId={params.highlightPostId as string}
           highlightCommentId={params.highlightCommentId as string}
           highlightReplyId={params.highlightReplyId as string}
         />;
       case 'activities':
-        return <ClassActivities courseCode={course.code} courseName={course.name} />;
+        return <ClassActivities courseCode={course.code} courseName={course.name} classcode={params.classcode as string} />;
       case 'resources':
-        return <ClassResources courseCode={course.code} />;
+        return <ClassResources courseCode={course.code} classcode={params.classcode as string} />;
       case 'classlist':
-        return <ClassStudents instructor={course.instructor} />;
+        return <ClassStudents instructor={course.instructor} classcode={params.classcode as string} />;
       case 'details':
         return (
           <ScrollView className="flex-1 bg-white mb-2" showsVerticalScrollIndicator={false}>
             <View className="px-6 py-8">
-              {courseDetails ? (
+              {loading ? (
+                <View className="items-center justify-center py-20">
+                  <ActivityIndicator size="large" color="#4285F4" />
+                  <Text className="text-millionGrey mt-4">Loading class details...</Text>
+                </View>
+              ) : error ? (
+                <View className="items-center justify-center py-20">
+                  <Text className="text-red-600 text-base text-center mb-4">{error}</Text>
+                </View>
+              ) : courseDetails ? (
                 <View>
                   {/* class information section */}
                   <View className="mb-6">

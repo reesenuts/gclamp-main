@@ -5,6 +5,8 @@ type ClassFeedPostModalProps = {
   visible: boolean;
   courseCode: string;
   newPostContent: string;
+  currentUserName?: string;
+  currentUserInitials?: string;
   onContentChange: (text: string) => void;
   onClose: () => void;
   onPost: () => void;
@@ -14,6 +16,8 @@ export default function ClassFeedPostModal({
   visible,
   courseCode,
   newPostContent,
+  currentUserName = 'User',
+  currentUserInitials = 'U',
   onContentChange,
   onClose,
   onPost,
@@ -44,10 +48,10 @@ export default function ClassFeedPostModal({
           <ScrollView className="flex-1 px-6 pt-6" keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }} >
             <View className="flex-row mb-4">
               <View className="w-10 h-10 rounded-full bg-millionGrey/10 items-center justify-center mr-3">
-                <Text className="text-metalDeluxe font-bold">LP</Text>
+                <Text className="text-metalDeluxe font-bold">{currentUserInitials}</Text>
               </View>
               <View className="flex-1">
-                <Text className="text-twilightZone font-semibold text-base">Lee Parker Parantar</Text>
+                <Text className="text-twilightZone font-semibold text-base">{currentUserName}</Text>
                 <Text className="text-millionGrey text-xs">Posting to {courseCode}</Text>
               </View>
             </View>

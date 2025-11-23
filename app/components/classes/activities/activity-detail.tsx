@@ -1,8 +1,11 @@
 import { router, useLocalSearchParams } from "expo-router";
 import { CaretLeft, Clock, DownloadSimple, File, FileDoc, FilePdf, Paperclip, Star, X } from "phosphor-react-native";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Alert, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { authService, generalService, lampService } from "../../../services";
+import { SettingsResponse } from "../../../types/api";
+import { getErrorMessage } from "../../../utils/errorHandler";
 import ClassComment from "./class-comment";
 
 type Comment = {
@@ -26,57 +29,281 @@ type InstructorFile = {
   postedDate: string;
 };
 
+// Format date from API
+const formatDateFromAPI = (dateStr: string): string => {
+  if (!dateStr) return '';
+  try {
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return dateStr;
+    
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const month = monthNames[date.getMonth()];
+    const day = date.getDate();
+    const year = date.getFullYear();
+    
+    const hours = date.getHours();
+    const minutes = date.getMinutes();
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    const displayHours = hours % 12 || 12;
+    const displayMinutes = minutes.toString().padStart(2, '0');
+    const time = `${displayHours}:${displayMinutes} ${ampm}`;
+    
+    return `${month} ${day}, ${year}, ${time}`;
+  } catch {
+    return dateStr;
+  }
+};
+
+// Format timestamp for relative time
+const formatTimestamp = (dateStr: string): string => {
+  if (!dateStr) return 'Just now';
+  try {
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins} ${diffMins === 1 ? 'minute' : 'minutes'} ago`;
+    if (diffHours < 24) return `${diffHours} ${diffHours === 1 ? 'hour' : 'hours'} ago`;
+    if (diffDays < 7) return `${diffDays} ${diffDays === 1 ? 'day' : 'days'} ago`;
+    return formatDateFromAPI(dateStr);
+  } catch {
+    return dateStr;
+  }
+};
+
+// Get file type from filename
+const getFileType = (filename: string): 'pdf' | 'doc' | 'ppt' | 'xls' => {
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  if (ext === 'pdf') return 'pdf';
+  if (['doc', 'docx'].includes(ext)) return 'doc';
+  if (['ppt', 'pptx'].includes(ext)) return 'ppt';
+  if (['xls', 'xlsx'].includes(ext)) return 'xls';
+  return 'doc'; // default
+};
+
 export default function ActivityDetail() {
   const params = useLocalSearchParams();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [classcode, setClasscode] = useState<string | null>(null);
 
-  // activity data from params
-  const activity = {
+  // activity data from params (fallback to params if API data not loaded yet)
+  const [activity, setActivity] = useState({
     id: params.activityId as string,
     title: params.title as string,
     description: params.description as string,
     dueDate: params.dueDate as string,
-    points: parseInt(params.points as string),
+    points: parseInt(params.points as string) || 0,
     status: params.status as string,
     grade: params.grade ? parseInt(params.grade as string) : undefined,
     submittedDate: params.submittedDate as string || undefined,
     postedDate: params.postedDate as string || undefined,
     courseCode: params.courseCode as string,
     courseName: params.courseName as string,
-  };
+  });
 
   // instructor files data
-  const [instructorFiles] = useState<InstructorFile[]>([
-    {
-      id: '1',
-      name: 'Chapter_3_Activity_Sheet.pdf',
-      type: 'pdf',
-      size: '1.2 MB',
-      postedDate: 'Nov 10, 2025, 2:30 PM',
-    },
-    {
-      id: '2',
-      name: 'Research_Methodology_Worksheet.docx',
-      type: 'doc',
-      size: '856 KB',
-      postedDate: 'Nov 8, 2025, 10:15 AM',
-    },
-  ]);
-
-  // file attachments state
+  const [instructorFiles, setInstructorFiles] = useState<InstructorFile[]>([]);
+  // file attachments state (student uploaded files)
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   // comments state
-  const [comments, setComments] = useState<Comment[]>([
-    {
-      id: '1',
-      author: 'Melner Balce',
-      content: 'Make sure to follow the rubric provided. Late submissions will have deductions.',
-      timestamp: '2 days ago',
-    }
-  ]);
+  const [comments, setComments] = useState<Comment[]>([]);
   // new comment input state
   const [newComment, setNewComment] = useState('');
   // comments modal state
   const [isCommentsModalVisible, setIsCommentsModalVisible] = useState(false);
+  // comment loading state
+  const [isAddingComment, setIsAddingComment] = useState(false);
+
+  // Fetch classcode
+  useEffect(() => {
+    const fetchClasscode = async () => {
+      try {
+        const user = await authService.getCurrentUser();
+        if (!user) return;
+
+        const settingsResponse = await generalService.getSettings();
+        if (settingsResponse.status.rem !== 'success' || !settingsResponse.data) return;
+
+        const settings = settingsResponse.data as SettingsResponse;
+        const academicYear = settings.setting?.acadyear_fld || '';
+        const semester = settings.setting?.sem_fld || '';
+
+        if (!academicYear || !semester) return;
+
+        const classesResponse = await lampService.getStudentClasses({
+          p_id: user.id,
+          p_ay: academicYear,
+          p_sem: String(semester),
+        });
+
+        if (classesResponse.status.rem === 'success' && classesResponse.data) {
+          const classes = Array.isArray(classesResponse.data) ? classesResponse.data : [];
+          const matchedClass = classes.find((cls: any) => cls.subjcode_fld === activity.courseCode);
+          if (matchedClass?.classcode_fld) {
+            setClasscode(matchedClass.classcode_fld);
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching classcode:', err);
+      }
+    };
+
+    fetchClasscode();
+  }, [activity.courseCode]);
+
+  // Fetch activity details, files, and comments
+  useEffect(() => {
+    const fetchActivityData = async () => {
+      if (!classcode || !activity.id) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        setLoading(true);
+        setError(null);
+
+        // Fetch activity details
+        const activitiesResponse = await lampService.getClassActivities({
+          p_classcode: classcode,
+        });
+
+        if (activitiesResponse.status.rem === 'success' && activitiesResponse.data) {
+          const activities = Array.isArray(activitiesResponse.data) ? activitiesResponse.data : [];
+          const matchedActivity = activities.find((act: any) => 
+            act.actcode_fld?.toString() === activity.id || 
+            act.recno_fld?.toString() === activity.id
+          );
+
+          if (matchedActivity) {
+            // Update activity with API data
+            const isSubmitted = matchedActivity.issubmitted_fld === 1;
+            const deadline = matchedActivity.deadline_fld ? new Date(matchedActivity.deadline_fld) : null;
+            const now = new Date();
+            let status = 'not_started';
+            if (isSubmitted) {
+              if (matchedActivity.datetime_submitted && deadline) {
+                const submitted = new Date(matchedActivity.datetime_submitted);
+                status = submitted > deadline ? 'late' : 'done';
+              } else {
+                status = 'done';
+              }
+            } else if (deadline && now > deadline) {
+              status = 'missing';
+            }
+
+            setActivity({
+              id: matchedActivity.actcode_fld?.toString() || matchedActivity.recno_fld?.toString() || activity.id,
+              title: matchedActivity.title_fld || activity.title,
+              description: matchedActivity.desc_fld || activity.description,
+              dueDate: formatDateFromAPI(matchedActivity.deadline_fld || ''),
+              points: matchedActivity.totalscore_fld || activity.points,
+              status,
+              grade: matchedActivity.isscored_fld === 1 ? matchedActivity.score_fld : undefined,
+              submittedDate: matchedActivity.datetime_submitted ? formatDateFromAPI(matchedActivity.datetime_submitted).split(',')[0] : undefined,
+              postedDate: formatDateFromAPI(matchedActivity.datetime_fld || ''),
+              courseCode: activity.courseCode,
+              courseName: activity.courseName,
+            });
+
+            // Extract instructor files from activity
+            if (matchedActivity.filedir_fld) {
+              const files: InstructorFile[] = [];
+              // Handle single file or multiple files
+              const filePaths = Array.isArray(matchedActivity.filedir_fld) 
+                ? matchedActivity.filedir_fld 
+                : [matchedActivity.filedir_fld];
+              
+              filePaths.forEach((filePath: string) => {
+                if (filePath) {
+                  const filename = filePath.split('/').pop() || filePath;
+                  files.push({
+                    id: filename,
+                    name: filename,
+                    type: getFileType(filename),
+                    size: 'Unknown', // API doesn't provide size
+                    postedDate: formatDateFromAPI(matchedActivity.datetime_fld || ''),
+                  });
+                }
+              });
+              setInstructorFiles(files);
+            }
+          }
+        }
+
+        // Fetch student submission files
+        const user = await authService.getCurrentUser();
+        if (user) {
+          try {
+            const submissionResponse = await lampService.getSubmission({
+              p_id: user.id,
+              p_classcode: classcode,
+              p_actcode: activity.id,
+            });
+
+            if (submissionResponse.status.rem === 'success' && submissionResponse.data) {
+              const submission = Array.isArray(submissionResponse.data) 
+                ? submissionResponse.data[0] 
+                : submissionResponse.data;
+              
+              if (submission?.filedir_fld) {
+                const filePaths = Array.isArray(submission.filedir_fld)
+                  ? submission.filedir_fld
+                  : [submission.filedir_fld];
+                
+                const files: Attachment[] = filePaths.map((filePath: string, index: number) => {
+                  const filename = filePath.split('/').pop() || `file_${index + 1}`;
+                  return {
+                    id: filename,
+                    name: filename,
+                    size: 'Unknown',
+                  };
+                });
+                setAttachments(files);
+              }
+            }
+          } catch (err) {
+            // No submission found - that's okay
+            console.log('No submission found');
+          }
+        }
+
+        // Fetch comments
+        try {
+          const commentsResponse = await lampService.getClassComments({
+            p_actioncode: activity.id,
+            p_commentcode: '',
+          });
+
+          if (commentsResponse.status.rem === 'success' && commentsResponse.data) {
+            const apiComments = Array.isArray(commentsResponse.data) ? commentsResponse.data : [];
+            const transformedComments: Comment[] = apiComments.map((comment: any) => ({
+              id: comment.recno_fld?.toString() || comment.commentcode_fld?.toString() || '',
+              author: comment.author_fld || comment.fullname_fld || 'Unknown',
+              content: comment.content_fld || '',
+              timestamp: formatTimestamp(comment.datetime_fld || comment.date_fld),
+            }));
+            setComments(transformedComments);
+          }
+        } catch (err) {
+          // No comments - that's okay
+          console.log('No comments found');
+        }
+      } catch (err: any) {
+        console.error('Error fetching activity data:', err);
+        setError(getErrorMessage(err));
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchActivityData();
+  }, [classcode, activity.id]);
 
   // add file attachment
   const handleAddFile = () => {
@@ -94,28 +321,134 @@ export default function ActivityDetail() {
   };
 
   // submit assignment
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (attachments.length === 0) {
       Alert.alert('No Files', 'Please attach at least one file before submitting.');
       return;
     }
-    Alert.alert('Success', 'Your work has been submitted successfully!');
-    router.back();
+
+    if (!classcode || !activity.id) {
+      Alert.alert('Error', 'Missing required information');
+      return;
+    }
+
+    try {
+      const user = await authService.getCurrentUser();
+      if (!user) {
+        Alert.alert('Error', 'Please login to submit');
+        return;
+      }
+
+      // Get settings for academic year and semester
+      const settingsResponse = await generalService.getSettings();
+      if (settingsResponse.status.rem !== 'success' || !settingsResponse.data) {
+        Alert.alert('Error', 'Failed to load settings');
+        return;
+      }
+
+      const settings = settingsResponse.data as SettingsResponse;
+      const academicYear = settings.setting?.acadyear_fld || '';
+      const semester = settings.setting?.sem_fld || '';
+
+      if (!academicYear || !semester) {
+        Alert.alert('Error', 'Academic year or semester not found');
+        return;
+      }
+
+      // TODO: Upload files first, then save submission
+      // For now, save submission with file directory (would be set after upload)
+      const now = new Date().toISOString();
+      const response = await lampService.saveWork({
+        p_classcode: classcode,
+        p_actcode: activity.id,
+        p_id: user.id,
+        p_type: 'submission', // or determine from activity type
+        p_dir: attachments.map(a => a.name).join(','), // Placeholder - would be actual file paths
+        p_issubmitted: 1,
+        p_isscored: 0,
+        p_score: 0,
+        p_datetime: now,
+      });
+
+      if (response.status.rem === 'success') {
+        Alert.alert('Success', 'Your work has been submitted successfully!');
+        router.back();
+      } else {
+        Alert.alert('Error', response.status.msg || 'Failed to submit');
+      }
+    } catch (err: any) {
+      console.error('Error submitting:', err);
+      Alert.alert('Error', getErrorMessage(err));
+    }
   };
 
   // add comment
-  const handleAddComment = () => {
-    if (!newComment.trim()) return;
+  const handleAddComment = async () => {
+    if (!newComment.trim() || !classcode || !activity.id || isAddingComment) return;
 
-    const comment: Comment = {
-      id: Date.now().toString(),
-      author: 'You',
-      content: newComment,
-      timestamp: 'Just now',
-    };
+    try {
+      setIsAddingComment(true);
+      const user = await authService.getCurrentUser();
+      if (!user) {
+        Alert.alert('Error', 'Please login to comment');
+        setIsAddingComment(false);
+        return;
+      }
 
-    setComments([...comments, comment]);
-    setNewComment('');
+      const now = new Date().toISOString();
+      const response = await lampService.addClassComment({
+        p_content: newComment.trim(),
+        p_id: user.id,
+        p_classcode: classcode,
+        p_actioncode: activity.id,
+        p_ctype: 'comment',
+        p_date: now,
+      });
+
+      if (response.status.rem === 'success') {
+        // Refresh comments
+        try {
+          const commentsResponse = await lampService.getClassComments({
+            p_actioncode: activity.id,
+            p_commentcode: '',
+          });
+
+          if (commentsResponse.status.rem === 'success' && commentsResponse.data) {
+            const apiComments = Array.isArray(commentsResponse.data) ? commentsResponse.data : [];
+            const transformedComments: Comment[] = apiComments.map((comment: any) => ({
+              id: comment.recno_fld?.toString() || comment.commentcode_fld?.toString() || '',
+              author: comment.author_fld || comment.fullname_fld || 'Unknown',
+              content: comment.content_fld || '',
+              timestamp: formatTimestamp(comment.datetime_fld || comment.date_fld),
+            }));
+            setComments(transformedComments);
+          } else if (commentsResponse.status.msg?.includes('No Records')) {
+            // No comments - set empty array
+            setComments([]);
+          }
+        } catch (err: any) {
+          // Handle "no records" error gracefully
+          const errorMsg = err?.message || err?.data?.message || '';
+          if (errorMsg.includes('No Records') || errorMsg.includes('no records') || err?.status === 404) {
+            setComments([]);
+          } else {
+            console.error('Error refreshing comments:', err);
+          }
+        }
+
+        setNewComment('');
+      } else {
+        Alert.alert('Error', response.status.msg || 'Failed to add comment');
+      }
+    } catch (err: any) {
+      console.error('Error adding comment:', err);
+      const errorMsg = err?.message || err?.data?.message || '';
+      if (!errorMsg.includes('No Records') && !errorMsg.includes('no records')) {
+        Alert.alert('Error', getErrorMessage(err));
+      }
+    } finally {
+      setIsAddingComment(false);
+    }
   };
 
   // open comments modal
@@ -350,7 +683,7 @@ Your literature review will be evaluated based on:
 
 Submit as a PDF file. Include a title page and ensure all citations are properly formatted. Late submissions will not be accepted without prior approval.`;
       default:
-        return activity.description;
+        return activity.description || 'No additional instructions provided.';
     }
   };
 
@@ -367,8 +700,9 @@ Submit as a PDF file. Include a title page and ensure all citations are properly
       </View>
 
       {/* scrollable content */}
-      <ScrollView className="flex-1 mb-2" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
-        <View className="p-6">
+      {!loading && !error && (
+        <ScrollView className="flex-1 mb-2" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
+          <View className="p-6">
           {/* status badge */}
           <View className={`${statusConfig.bgColor} px-3 py-1 rounded-full self-start mb-4`}>
             <Text className={`${statusConfig.textColor} text-xs font-semibold`}>
@@ -527,13 +861,15 @@ Submit as a PDF file. Include a title page and ensure all citations are properly
               </View>
             )}
           </Pressable>
-        </View>
-      </ScrollView>
+          </View>
+        </ScrollView>
+      )}
 
       {/* fixed bottom bar */}
-      <SafeAreaView edges={['bottom']} className="bg-white border-t border-crystalBell">
-        <View className="px-6 py-4">
-          {!isSubmitted ? (
+      {!loading && !error && (
+        <SafeAreaView edges={['bottom']} className="bg-white border-t border-crystalBell">
+          <View className="px-6 py-4">
+            {!isSubmitted ? (
             <>
               {/* upload file button */}
               <Pressable onPress={handleAddFile} className="bg-white border border-crystalBell rounded-full p-5" >
@@ -582,10 +918,21 @@ Submit as a PDF file. Include a title page and ensure all citations are properly
             </View>
           )}
         </View>
-      </SafeAreaView>
+        </SafeAreaView>
+      )}
 
       {/* comments modal */}
-      <ClassComment visible={isCommentsModalVisible} comments={comments} newComment={newComment} onClose={handleCloseComments} onCommentChange={setNewComment} onAddComment={handleAddComment} />
+      {!loading && !error && (
+        <ClassComment 
+          visible={isCommentsModalVisible} 
+          comments={comments} 
+          newComment={newComment}
+          loading={isAddingComment}
+          onClose={handleCloseComments} 
+          onCommentChange={setNewComment} 
+          onAddComment={handleAddComment} 
+        />
+      )}
     </SafeAreaView>
   );
 }

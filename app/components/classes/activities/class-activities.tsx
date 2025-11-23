@@ -1,7 +1,10 @@
 import { router } from "expo-router";
 import { Clock } from "phosphor-react-native";
-import { useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import { authService, generalService, lampService } from "../../../services";
+import { SettingsResponse } from "../../../types/api";
+import { getErrorMessage } from "../../../utils/errorHandler";
 
 type ActivityStatus = 'done' | 'missing' | 'not_started' | 'late';
 
@@ -20,6 +23,7 @@ type Activity = {
 type ClassActivitiesProps = {
   courseCode: string;
   courseName: string;
+  classcode?: string; // Optional - will be fetched if not provided
 };
 
 const getStatusConfig = (status: ActivityStatus) => {
@@ -51,58 +55,172 @@ const getStatusConfig = (status: ActivityStatus) => {
   }
 };
 
-export default function ClassActivities({ courseCode, courseName }: ClassActivitiesProps) {
-  const [activities] = useState<Activity[]>([
-    {
-      id: '1',
-      title: 'Chapter 3 Draft Submission',
-      description: 'Submit your Chapter 3 draft for review',
-      dueDate: 'Nov 15, 2025, 11:59 PM',
-      points: 100,
-      status: 'not_started',
-      postedDate: 'Nov 10, 2025, 2:30 PM',
-    },
-    {
-      id: '2',
-      title: 'Midterm Quiz',
-      description: 'Online quiz covering topics 1-5',
-      dueDate: 'Nov 20, 2025, 11:59 PM',
-      points: 50,
-      status: 'not_started',
-      postedDate: 'Nov 12, 2025, 9:00 AM',
-    },
-    {
-      id: '3',
-      title: 'Chapter 2 Submission',
-      description: 'Final Chapter 2 submission',
-      dueDate: 'Nov 1, 2025, 11:59 PM',
-      points: 100,
-      status: 'done',
-      grade: 95,
-      submittedDate: 'Nov 1, 2025',
-      postedDate: 'Oct 25, 2025, 3:15 PM',
-    },
-    {
-      id: '4',
-      title: 'Research Methodology Assignment',
-      description: 'Complete the research methodology worksheet',
-      dueDate: 'Oct 28, 2025, 11:59 PM',
-      points: 50,
-      status: 'late',
-      grade: 40,
-      submittedDate: 'Oct 30, 2025',
-      postedDate: 'Oct 15, 2025, 10:00 AM',
-    },
-    {
-      id: '5',
-      title: 'Literature Review',
-      description: 'Submit literature review section',
-      dueDate: 'Oct 20, 2025, 11:59 PM',
-      points: 100,
-      status: 'missing',
-      postedDate: 'Oct 5, 2025, 1:45 PM',
-    },
-  ]);
+// Format date from API (MySQL datetime format) to display format
+const formatDateFromAPI = (dateStr: string): string => {
+  if (!dateStr) return '';
+  try {
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return dateStr;
+    
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const month = monthNames[date.getMonth()];
+    const day = date.getDate();
+    const year = date.getFullYear();
+    
+    const hours = date.getHours();
+    const minutes = date.getMinutes();
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    const displayHours = hours % 12 || 12;
+    const displayMinutes = minutes.toString().padStart(2, '0');
+    const time = `${displayHours}:${displayMinutes} ${ampm}`;
+    
+    return `${month} ${day}, ${year}, ${time}`;
+  } catch {
+    return dateStr;
+  }
+};
+
+// Determine activity status based on submission data
+const determineStatus = (apiActivity: any): ActivityStatus => {
+  if (apiActivity.issubmitted_fld === 1) {
+    // Check if submitted late
+    if (apiActivity.deadline_fld && apiActivity.datetime_submitted) {
+      const deadline = new Date(apiActivity.deadline_fld);
+      const submitted = new Date(apiActivity.datetime_submitted);
+      if (submitted > deadline) {
+        return 'late';
+      }
+    }
+    return 'done';
+  } else if (apiActivity.deadline_fld) {
+    const deadline = new Date(apiActivity.deadline_fld);
+    const now = new Date();
+    if (now > deadline) {
+      return 'missing';
+    }
+  }
+  return 'not_started';
+};
+
+// Transform API activity to Activity type
+const transformActivity = (apiActivity: any): Activity => {
+  const status = determineStatus(apiActivity);
+  
+  return {
+    id: apiActivity.actcode_fld?.toString() || apiActivity.recno_fld?.toString() || '',
+    title: apiActivity.title_fld || '',
+    description: apiActivity.desc_fld || '',
+    dueDate: formatDateFromAPI(apiActivity.deadline_fld || ''),
+    points: apiActivity.totalscore_fld || 0,
+    status,
+    grade: apiActivity.isscored_fld === 1 ? apiActivity.score_fld : undefined,
+    submittedDate: apiActivity.datetime_submitted ? formatDateFromAPI(apiActivity.datetime_submitted).split(',')[0] : undefined,
+    postedDate: formatDateFromAPI(apiActivity.datetime_fld || ''),
+  };
+};
+
+export default function ClassActivities({ courseCode, courseName, classcode }: ClassActivitiesProps) {
+  const [activities, setActivities] = useState<Activity[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Get classcode - either from prop or fetch it
+  const [actualClasscode, setActualClasscode] = useState<string | null>(classcode || null);
+
+  // Fetch classcode if not provided
+  useEffect(() => {
+    const fetchClasscode = async () => {
+      if (classcode) {
+        setActualClasscode(classcode);
+        return;
+      }
+
+      try {
+        const user = await authService.getCurrentUser();
+        if (!user) return;
+
+        const settingsResponse = await generalService.getSettings();
+        if (settingsResponse.status.rem !== 'success' || !settingsResponse.data) return;
+
+        const settings = settingsResponse.data as SettingsResponse;
+        const academicYear = settings.setting?.acadyear_fld || '';
+        const semester = settings.setting?.sem_fld || '';
+
+        if (!academicYear || !semester) return;
+
+        const classesResponse = await lampService.getStudentClasses({
+          p_id: user.id,
+          p_ay: academicYear,
+          p_sem: String(semester),
+        });
+
+        if (classesResponse.status.rem === 'success' && classesResponse.data) {
+          const classes = Array.isArray(classesResponse.data) ? classesResponse.data : [];
+          const matchedClass = classes.find((cls: any) => cls.subjcode_fld === courseCode);
+          if (matchedClass?.classcode_fld) {
+            setActualClasscode(matchedClass.classcode_fld);
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching classcode:', err);
+      }
+    };
+
+    fetchClasscode();
+  }, [classcode, courseCode]);
+
+  // Fetch activities
+  useEffect(() => {
+    const fetchActivities = async () => {
+      if (!actualClasscode) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        setLoading(true);
+        setError(null);
+
+        const activitiesResponse = await lampService.getClassActivities({
+          p_classcode: actualClasscode,
+        });
+
+        // Handle "No Records" case
+        if (activitiesResponse.status.rem !== 'success') {
+          // Check if it's "No Records" - that's okay, just means no activities
+          if (activitiesResponse.status.msg?.includes('No Records') || 
+              activitiesResponse.status.msg?.includes('no records')) {
+            setActivities([]);
+            setLoading(false);
+            return;
+          }
+          setError(activitiesResponse.status.msg || 'Failed to load activities');
+          setLoading(false);
+          return;
+        }
+
+        // Handle null data (no activities)
+        const apiActivities = activitiesResponse.data && Array.isArray(activitiesResponse.data)
+          ? activitiesResponse.data
+          : [];
+
+        const transformedActivities = apiActivities.map(transformActivity);
+        setActivities(transformedActivities);
+      } catch (err: any) {
+        console.error('Error fetching activities:', err);
+        const errorMsg = err?.message || err?.data?.message || '';
+        if (errorMsg.includes('No Records') || errorMsg.includes('no records') || err?.status === 404) {
+          setActivities([]);
+        } else {
+          setError(getErrorMessage(err));
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchActivities();
+  }, [actualClasscode]);
 
   const handleActivityClick = (activity: Activity) => {
     router.push({
@@ -135,6 +253,61 @@ export default function ClassActivities({ courseCode, courseName }: ClassActivit
   return (
     <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
       <View className="p-6">
+        {/* Loading state */}
+        {loading && (
+          <View className="items-center justify-center py-20">
+            <ActivityIndicator size="large" color="#4285F4" />
+            <Text className="text-millionGrey text-base mt-4">Loading activities...</Text>
+          </View>
+        )}
+
+        {/* Error state */}
+        {!loading && error && (
+          <View className="items-center justify-center py-20 px-6">
+            <Text className="text-red-600 text-base mb-2 text-center">{error}</Text>
+            <Pressable
+              onPress={() => {
+                setError(null);
+                setLoading(true);
+                // Trigger refetch
+                if (actualClasscode) {
+                  const fetchActivities = async () => {
+                    try {
+                      const activitiesResponse = await lampService.getClassActivities({
+                        p_classcode: actualClasscode,
+                      });
+                      if (activitiesResponse.status.rem === 'success') {
+                        const apiActivities = activitiesResponse.data && Array.isArray(activitiesResponse.data)
+                          ? activitiesResponse.data
+                          : [];
+                        const transformedActivities = apiActivities.map(transformActivity);
+                        setActivities(transformedActivities);
+                        setError(null);
+                      } else if (activitiesResponse.status.msg?.includes('No Records')) {
+                        setActivities([]);
+                        setError(null);
+                      } else {
+                        setError(activitiesResponse.status.msg || 'Failed to load activities');
+                      }
+                    } catch (err: any) {
+                      setError(getErrorMessage(err));
+                    } finally {
+                      setLoading(false);
+                    }
+                  };
+                  fetchActivities();
+                }
+              }}
+              className="bg-metalDeluxe rounded-full px-6 py-3 mt-4"
+            >
+              <Text className="text-white text-base">Retry</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {/* Activities list */}
+        {!loading && !error && (
+          <>
         {/* missing activities */}
         {missingActivities.length > 0 && (
           <View className="mb-6">
@@ -253,6 +426,15 @@ export default function ClassActivities({ courseCode, courseName }: ClassActivit
               );
             })}
           </View>
+        )}
+
+            {/* Empty state */}
+            {activities.length === 0 && (
+              <View className="items-center justify-center py-20">
+                <Text className="text-millionGrey text-base">No activities found.</Text>
+              </View>
+            )}
+          </>
         )}
       </View>
     </ScrollView>

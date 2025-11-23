@@ -14,6 +14,7 @@ type ClassFeedCommentsProps = {
   postId: string;
   comments: Comment[];
   showComments: boolean;
+  currentUserInitials?: string; // Optional user initials for comment input
   commentInputs: { [key: string]: string };
   replyInputs: { [key: string]: string };
   showReplyInputs: { [key: string]: boolean };
@@ -39,6 +40,7 @@ export default function ClassFeedComments({
   postId,
   comments,
   showComments,
+  currentUserInitials = 'U',
   commentInputs,
   replyInputs,
   showReplyInputs,
@@ -63,6 +65,14 @@ export default function ClassFeedComments({
 
   return (
     <View className="mt-3 border-t border-crystalBell pt-3">
+      {/* Empty state */}
+      {comments.length === 0 && (
+        <View className="py-4 items-center">
+          <Text className="text-millionGrey text-sm">No comments yet. Be the first to comment!</Text>
+        </View>
+      )}
+
+      {/* Comments list */}
       {comments.map((comment) => {
         const isEditing = editingComment?.postId === postId && editingComment?.commentId === comment.id;
 
@@ -210,7 +220,7 @@ export default function ClassFeedComments({
             {showReplyInputs[comment.id] && (
               <View className="ml-12 mb-2 flex-row items-center">
                 <View className="w-10 h-10 rounded-full border border-crystalBell bg-millionGrey/10 mr-2 items-center justify-center">
-                  <Text className="text-metalDeluxe font-bold text-xs">LP</Text>
+                  <Text className="text-metalDeluxe font-bold text-xs">{currentUserInitials}</Text>
                 </View>
                 <View className="flex-1 flex-row items-center border border-crystalBell rounded-full p-4 px-5" style={{ height: 48 }}>
                   <TextInput 
@@ -247,7 +257,7 @@ export default function ClassFeedComments({
       {/* add new comment input */}
       <View className="flex-row items-center mt-2">
         <View className="w-10 h-10 rounded-full border border-crystalBell bg-millionGrey/10 mr-2 items-center justify-center">
-          <Text className="text-metalDeluxe font-bold text-xs">LP</Text>
+          <Text className="text-metalDeluxe font-bold text-xs">{currentUserInitials}</Text>
         </View>
         <View className="flex-1 flex-row items-center border border-crystalBell rounded-full p-4 px-5">
           <TextInput 

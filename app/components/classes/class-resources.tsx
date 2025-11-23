@@ -1,6 +1,8 @@
 import { CaretDown, DownloadSimple, FileDoc, FilePdf, FileText, FolderOpen, FolderSimple } from "phosphor-react-native";
-import { useState } from "react";
-import { Alert, Pressable, ScrollView, Text, View } from "react-native";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, Alert, Pressable, ScrollView, Text, View } from "react-native";
+import { lampService } from "../../services";
+import { getErrorMessage } from "../../utils/errorHandler";
 
 type Resource = {
   id: string;
@@ -13,102 +15,165 @@ type Resource = {
 
 type ClassResourcesProps = {
   courseCode: string;
+  classcode?: string; // Optional - will be fetched if not provided
 };
 
-export default function ClassResources({ courseCode }: ClassResourcesProps) {
+export default function ClassResources({ courseCode, classcode }: ClassResourcesProps) {
   // track expanded folders
   const [expandedFolders, setExpandedFolders] = useState<{ [key: string]: boolean }>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [actualClasscode, setActualClasscode] = useState<string | null>(classcode || null);
+  const [resources, setResources] = useState<Resource[]>([]);
 
-  // resources data
-  const [resources] = useState<Resource[]>([
-    {
-      id: '1',
-      name: 'Lecture Slides',
-      type: 'folder',
-      uploadDate: 'Multiple dates',
-      items: [
-        {
-          id: '1-1',
-          name: 'Week_1_Introduction.pdf',
-          type: 'pdf',
-          size: '2.4 MB',
-          uploadDate: 'Oct 1, 2025',
-        },
-        {
-          id: '1-2',
-          name: 'Week_2_Literature_Review.pdf',
-          type: 'pdf',
-          size: '3.1 MB',
-          uploadDate: 'Oct 8, 2025',
-        },
-        {
-          id: '1-3',
-          name: 'Week_3_Methodology.pdf',
-          type: 'pdf',
-          size: '2.8 MB',
-          uploadDate: 'Oct 15, 2025',
-        },
-      ],
-    },
-    {
-      id: '2',
-      name: 'Reading Materials',
-      type: 'folder',
-      uploadDate: 'Multiple dates',
-      items: [
-        {
-          id: '2-1',
-          name: 'Research_Guidelines.pdf',
-          type: 'pdf',
-          size: '1.2 MB',
-          uploadDate: 'Sep 15, 2025',
-        },
-        {
-          id: '2-2',
-          name: 'APA_Citation_Guide.pdf',
-          type: 'pdf',
-          size: '890 KB',
-          uploadDate: 'Sep 15, 2025',
-        },
-        {
-          id: '2-3',
-          name: 'Thesis_Format_Template.docx',
-          type: 'doc',
-          size: '456 KB',
-          uploadDate: 'Sep 20, 2025',
-        },
-      ],
-    },
-    {
-      id: '3',
-      name: 'Sample Thesis Papers',
-      type: 'folder',
-      uploadDate: 'Multiple dates',
-      items: [
-        {
-          id: '3-1',
-          name: 'Sample_Thesis_CS_2024.pdf',
-          type: 'pdf',
-          size: '5.6 MB',
-          uploadDate: 'Sep 10, 2025',
-        },
-        {
-          id: '3-2',
-          name: 'Sample_Thesis_CS_2023.pdf',
-          type: 'pdf',
-          size: '4.8 MB',
-          uploadDate: 'Sep 10, 2025',
-        },
-      ],
-    },
-    {
-      id: '4',
-      name: 'Course_Syllabus.pdf',
-      type: 'pdf',
-      size: '1.5 MB',
-      uploadDate: 'Aug 15, 2025',
-    },
-  ]);
+  // Format date from API
+  const formatDateFromAPI = (dateStr: string): string => {
+    if (!dateStr) return 'Unknown date';
+    try {
+      const date = new Date(dateStr);
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    } catch {
+      return dateStr;
+    }
+  };
+
+  // Get file type from filename
+  const getFileTypeFromName = (filename: string): 'pdf' | 'doc' | 'ppt' | 'other' => {
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    if (ext === 'pdf') return 'pdf';
+    if (['doc', 'docx'].includes(ext)) return 'doc';
+    if (['ppt', 'pptx'].includes(ext)) return 'ppt';
+    return 'other';
+  };
+
+  // Format file size (placeholder - API might not return size)
+  const formatFileSize = (size?: number): string => {
+    if (!size) return '';
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  // Transform API resource to Resource type
+  const transformResource = (apiResource: any): Resource => {
+    const filename = apiResource.filedir_fld?.split('/').pop() || apiResource.title_fld || 'Untitled';
+    const hasFile = apiResource.withfile_fld === 1 || apiResource.withfile_fld === '1';
+    
+    return {
+      id: apiResource.recno_fld?.toString() || apiResource.rescode_fld?.toString() || '',
+      name: apiResource.title_fld || filename,
+      type: hasFile ? getFileTypeFromName(filename) : 'other',
+      size: formatFileSize(apiResource.size_fld),
+      uploadDate: formatDateFromAPI(apiResource.datetime_fld),
+    };
+  };
+
+  // Group resources by topiccode (folders)
+  const groupResourcesByTopic = (apiResources: any[]): Resource[] => {
+    const topicMap: { [key: string]: { topic: any; resources: any[] } } = {};
+    const standaloneResources: any[] = [];
+
+    apiResources.forEach((resource) => {
+      if (resource.topiccode_fld && resource.topicname_fld) {
+        // Resource belongs to a topic (folder)
+        if (!topicMap[resource.topiccode_fld]) {
+          topicMap[resource.topiccode_fld] = {
+            topic: {
+              id: resource.topiccode_fld,
+              name: resource.topicname_fld,
+            },
+            resources: [],
+          };
+        }
+        topicMap[resource.topiccode_fld].resources.push(resource);
+      } else {
+        // Standalone resource (no topic)
+        standaloneResources.push(resource);
+      }
+    });
+
+    const result: Resource[] = [];
+
+    // Add folders (topics) with their resources
+    Object.values(topicMap).forEach(({ topic, resources: topicResources }) => {
+      result.push({
+        id: `topic-${topic.id}`,
+        name: topic.name,
+        type: 'folder',
+        uploadDate: 'Multiple dates',
+        items: topicResources.map(transformResource),
+      });
+    });
+
+    // Add standalone resources
+    standaloneResources.forEach((resource) => {
+      result.push(transformResource(resource));
+    });
+
+    return result;
+  };
+
+  // Fetch resources from API
+  const fetchResources = async () => {
+    if (!actualClasscode) {
+      setLoading(false);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      const response = await lampService.getClassResources({
+        p_classcode: actualClasscode,
+      });
+
+      if (response.status.rem === 'success' && response.data) {
+        const apiResources = Array.isArray(response.data) ? response.data : [];
+        const groupedResources = groupResourcesByTopic(apiResources);
+        setResources(groupedResources);
+      } else if (response.status.msg?.includes('No Records') || 
+                 response.status.msg?.includes('no records')) {
+        // No resources - set empty array
+        setResources([]);
+      } else {
+        setError(response.status.msg || 'Failed to load resources');
+      }
+    } catch (err: any) {
+      // Handle "no records" error gracefully
+      const errorMsg = err?.message || err?.data?.message || '';
+      if (errorMsg.includes('No Records') || errorMsg.includes('no records') || err?.status === 404) {
+        setResources([]);
+      } else {
+        console.error('Error fetching resources:', err);
+        setError(getErrorMessage(err));
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Fetch classcode if not provided (similar to other components)
+  useEffect(() => {
+    const fetchClasscode = async () => {
+      if (classcode) {
+        setActualClasscode(classcode);
+      } else {
+        // If classcode not provided, try to fetch it
+        // This would require getting settings and classes - for now, just set loading to false
+        setLoading(false);
+      }
+    };
+    fetchClasscode();
+  }, [classcode]);
+
+  // Fetch resources when classcode is available
+  useEffect(() => {
+    if (actualClasscode) {
+      fetchResources();
+    }
+  }, [actualClasscode]);
+
 
   // toggle folder expand/collapse
   const toggleFolder = (folderId: string) => {
@@ -229,9 +294,39 @@ export default function ClassResources({ courseCode }: ClassResourcesProps) {
     );
   };
 
+  if (loading) {
+    return (
+      <View className="flex-1 bg-slate-50 items-center justify-center">
+        <ActivityIndicator size="large" color="#4285F4" />
+        <Text className="text-millionGrey mt-4">Loading resources...</Text>
+      </View>
+    );
+  }
+
+  if (error) {
+    return (
+      <View className="flex-1 bg-slate-50 items-center justify-center px-6">
+        <Text className="text-red-600 text-base text-center mb-4">{error}</Text>
+        <Pressable
+          onPress={fetchResources}
+          className="bg-metalDeluxe rounded-full px-6 py-3"
+        >
+          <Text className="text-white text-base">Retry</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
   return (
     <ScrollView className="flex-1 bg-slate-50" showsVerticalScrollIndicator={false}>
       <View className="p-6">
+        {/* Empty state */}
+        {resources.length === 0 && (
+          <View className="items-center justify-center py-20">
+            <Text className="text-millionGrey text-base">No resources available yet.</Text>
+          </View>
+        )}
+
         {/* resources list */}
         {resources.map((resource) => renderResource(resource))}
       </View>

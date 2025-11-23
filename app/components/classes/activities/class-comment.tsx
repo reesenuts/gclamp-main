@@ -1,5 +1,5 @@
 import { X } from "phosphor-react-native";
-import { KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 type Comment = {
@@ -13,6 +13,7 @@ type ClassCommentProps = {
   visible: boolean;
   comments: Comment[];
   newComment: string;
+  loading?: boolean; // Optional loading state for adding comment
   onClose: () => void;
   onCommentChange: (text: string) => void;
   onAddComment: () => void;
@@ -22,6 +23,7 @@ export default function ClassComment({
   visible,
   comments,
   newComment,
+  loading = false,
   onClose,
   onCommentChange,
   onAddComment,
@@ -45,6 +47,14 @@ export default function ClassComment({
           {/* comments list */}
           <ScrollView className="flex-1" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }} keyboardShouldPersistTaps="handled" >
             <View className="p-6">
+              {/* Empty state */}
+              {comments.length === 0 && (
+                <View className="items-center justify-center py-20">
+                  <Text className="text-millionGrey text-base">No comments yet. Be the first to comment!</Text>
+                </View>
+              )}
+
+              {/* Comments list */}
               {comments.map((comment, index) => (
                 <View key={comment.id}>
                   {/* divider between comments */}
@@ -87,10 +97,18 @@ export default function ClassComment({
                 <TextInput className="p-5 text-twilightZone" placeholder="Write a comment or ask a question..." placeholderTextColor="#999999" multiline value={newComment} onChangeText={onCommentChange} style={{ textAlignVertical: 'top', minHeight: 40, maxHeight: 100 }} />
               </View>
               {/* post comment button */}
-              <Pressable onPress={onAddComment} className="bg-starfleetBlue rounded-full p-5" disabled={!newComment.trim()} >
-                <Text className={`text-center font-semibold ${newComment.trim() ? 'text-white' : 'text-white/50'}`}>
-                  Post Comment
-                </Text>
+              <Pressable 
+                onPress={onAddComment} 
+                className={`rounded-full p-5 ${newComment.trim() && !loading ? 'bg-starfleetBlue' : 'bg-starfleetBlue/50'}`} 
+                disabled={!newComment.trim() || loading}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#ffffff" />
+                ) : (
+                  <Text className={`text-center font-semibold ${newComment.trim() ? 'text-white' : 'text-white/50'}`}>
+                    Post Comment
+                  </Text>
+                )}
               </Pressable>
             </View>
           </SafeAreaView>

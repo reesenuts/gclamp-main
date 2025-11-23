@@ -218,7 +218,7 @@ export default function Classes() {
         <ScrollView className="flex-1 px-6 mb-2" showsVerticalScrollIndicator={false} >
           <View className="py-4">
             {filteredCourses.map((course) => (
-              <Pressable key={course.id} className="mb-4 rounded-2xl bg-white border border-crystalBell active:opacity-80" onPress={() => router.push({ pathname: '/components/classes/class-details', params: { code: course.code, name: course.name, instructor: course.instructor, schedule: course.schedule, time: course.time, room: course.room, color: course.color, }})}>
+              <Pressable key={course.id} className="mb-4 rounded-2xl bg-white border border-crystalBell active:opacity-80" onPress={() => router.push({ pathname: '/components/classes/class-details', params: { code: course.code, classcode: course.id, name: course.name, instructor: course.instructor, schedule: course.schedule, time: course.time, room: course.room, color: course.color, }})}>
                 <View className="p-4">
                   <View className="flex-row items-stretch">
                     <View className="w-1 rounded-full mr-3" style={{ backgroundColor: course.color }} />

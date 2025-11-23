@@ -1,6 +1,8 @@
 import { MagnifyingGlass } from "phosphor-react-native";
-import { useState } from "react";
-import { ScrollView, Text, TextInput, View } from "react-native";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { lampService } from "../../services";
+import { getErrorMessage } from "../../utils/errorHandler";
 
 type Student = {
   id: string;
@@ -11,166 +13,150 @@ type Student = {
 
 type ClassStudentsProps = {
   instructor: string;
+  classcode?: string; // Optional - will be fetched if not provided
 };
 
-export default function ClassStudents({ instructor }: ClassStudentsProps) {
+export default function ClassStudents({ instructor, classcode }: ClassStudentsProps) {
   // search state
   const [searchQuery, setSearchQuery] = useState('');
   const [isFocused, setIsFocused] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [actualClasscode, setActualClasscode] = useState<string | null>(classcode || null);
+  const [members, setMembers] = useState<Student[]>([]);
 
-  // members data
-  const [members] = useState<Student[]>([
-    {
-      id: '0',
+  // Transform API student to Student type
+  const transformStudent = (apiStudent: any): Student => {
+    // Format name: handle uppercase names like "AGUILAR, ZALDY"
+    // Try multiple possible field names
+    const fullName = apiStudent.fullname_fld || 
+                     apiStudent.name_fld || 
+                     apiStudent.studentname_fld ||
+                     `${apiStudent.fname_fld || ''} ${apiStudent.mname_fld || ''} ${apiStudent.lname_fld || ''}`.trim() ||
+                     'Unknown Student';
+    const email = apiStudent.email_fld || 
+                  apiStudent.emailadd_fld || 
+                  apiStudent.email_fld ||
+                  '';
+    
+    // Determine if this is the instructor (check email or name match)
+    const isInstructor = email === instructor || 
+                        fullName === instructor ||
+                        (email.includes('@gordoncollege.edu.ph') && 
+                        (apiStudent.role_fld === 'instructor' || apiStudent.empcode_fld));
+
+    return {
+      id: apiStudent.studno_fld?.toString() || apiStudent.id_fld?.toString() || apiStudent.recno_fld?.toString() || '',
+      name: fullName.trim() || 'Unknown Student',
+      email: email || `${fullName.toLowerCase().replace(/\s+/g, '.')}@gordoncollege.edu.ph`,
+      role: isInstructor ? 'instructor' : 'student',
+    };
+  };
+
+  // Fetch students from API
+  const fetchStudents = async () => {
+    if (!actualClasscode) {
+      setLoading(false);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      const response = await lampService.getStudentsInClass({
+        p_classcode: actualClasscode,
+      });
+
+      if (response.status.rem === 'success' && response.data) {
+        const apiStudents = Array.isArray(response.data) ? response.data : [];
+        
+        // Debug: Log first student to see structure
+        if (__DEV__ && apiStudents.length > 0) {
+          console.log('Sample student data:', apiStudents[0]);
+        }
+        
+        // Transform students
+        const transformedStudents = apiStudents.map(transformStudent);
+        
+        // Debug: Log transformed students
+        if (__DEV__ && transformedStudents.length > 0) {
+          console.log('Sample transformed student:', transformedStudents[0]);
+        }
+        
+        // Add instructor if not already in the list
+        const hasInstructor = transformedStudents.some(s => s.role === 'instructor');
+        if (!hasInstructor && instructor) {
+          transformedStudents.unshift({
+            id: 'instructor-0',
       name: instructor,
       email: `${instructor.toLowerCase().replace(/\s+/g, '.')}@gordoncollege.edu.ph`,
       role: 'instructor',
-    },
-    {
-      id: '1',
-      name: 'AGUILAR, ZALDY',
-      email: '202210583@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '2',
-      name: 'ALBERTO, SEAN RAD',
-      email: '202210012@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '3',
-      name: 'APO, EUNILLE JAN',
-      email: '202210094@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '4',
-      name: 'AQUINO, ROBINX PRHYNZ',
-      email: '202210599@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '5',
-      name: 'BANLUTA, CHRISTIAN DAVE',
-      email: '202210819@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '6',
-      name: 'BARGO, ANTHONY JAMES',
-      email: '202211002@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '7',
-      name: 'BELEN, KENT HAROLD',
-      email: '202211399@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '8',
-      name: 'BENEDICTO, BERNARD ADRIANNE',
-      email: '202210867@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '9',
-      name: 'CARDO, JOHN EDWARD',
-      email: '202211834@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '10',
-      name: 'DEDICATORIA, JOHN ERIC',
-      email: '202211048@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '11',
-      name: 'ECLARINAL, GODFREY',
-      email: '202211110@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '12',
-      name: 'FERREOL, ASHLEY KIER',
-      email: '202210473@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '13',
-      name: 'FLORES, KAYE',
-      email: '202211167@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '14',
-      name: 'ISIP, JOHN LYNARD',
-      email: '202211263@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '15',
-      name: 'LANDERO, CHRISTIAN JAY',
-      email: '202210274@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '16',
-      name: 'MARCELINO, JONASH',
-      email: '202211368@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '17',
-      name: 'MERCADO, MARCUS ADRIANNE',
-      email: '202211395@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '18',
-      name: 'MOLINO, DOMINIC',
-      email: '202210298@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '19',
-      name: 'NABOR, NEIL CARLO',
-      email: '202210600@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '20',
-      name: 'PAJARO, ROESCEN ABIE',
-      email: '202211504@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '21',
-      name: 'PARANTAR, LEE PARKER',
-      email: '202211523@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '22',
-      name: 'RESURRECCION, DEIANNE JEINNE',
-      email: '202210471@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '23',
-      name: 'URETA, ERLEIN NICOLE',
-      email: '202210420@gordoncollege.edu.ph',
-      role: 'student',
-    },
-    {
-      id: '24',
-      name: 'VIACRUSIS, CHRIS KIRK PATRICK',
-      email: '202210139@gordoncollege.edu.ph',
-      role: 'student',
-    },
-  ]);
+          });
+        }
+        
+        setMembers(transformedStudents);
+      } else if (response.status.msg?.includes('No Records') || 
+                 response.status.msg?.includes('no records')) {
+        // No students - add instructor only
+        if (instructor) {
+          setMembers([{
+            id: 'instructor-0',
+            name: instructor,
+            email: `${instructor.toLowerCase().replace(/\s+/g, '.')}@gordoncollege.edu.ph`,
+            role: 'instructor',
+          }]);
+        } else {
+          setMembers([]);
+        }
+      } else {
+        setError(response.status.msg || 'Failed to load students');
+      }
+    } catch (err: any) {
+      // Handle "no records" error gracefully
+      const errorMsg = err?.message || err?.data?.message || '';
+      if (errorMsg.includes('No Records') || errorMsg.includes('no records') || err?.status === 404) {
+        // No students - add instructor only
+        if (instructor) {
+          setMembers([{
+            id: 'instructor-0',
+            name: instructor,
+            email: `${instructor.toLowerCase().replace(/\s+/g, '.')}@gordoncollege.edu.ph`,
+            role: 'instructor',
+          }]);
+        } else {
+          setMembers([]);
+        }
+      } else {
+        console.error('Error fetching students:', err);
+        setError(getErrorMessage(err));
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Fetch classcode if not provided
+  useEffect(() => {
+    const fetchClasscode = async () => {
+      if (classcode) {
+        setActualClasscode(classcode);
+      } else {
+        // If classcode not provided, try to fetch it
+        // This would require getting settings and classes - for now, just set loading to false
+        setLoading(false);
+      }
+    };
+    fetchClasscode();
+  }, [classcode]);
+
+  // Fetch students when classcode is available
+  useEffect(() => {
+    if (actualClasscode) {
+      fetchStudents();
+    }
+  }, [actualClasscode, instructor]);
+
 
   // filter members by search query
   const filteredMembers = members.filter(member =>
@@ -182,9 +168,40 @@ export default function ClassStudents({ instructor }: ClassStudentsProps) {
   const instructors = filteredMembers.filter(m => m.role === 'instructor');
   const students = filteredMembers.filter(m => m.role === 'student');
 
-  // get initials from name
+  // get initials from name - handles formats like "LASTNAME, FIRSTNAME" or "FIRSTNAME LASTNAME"
   const getInitials = (name: string) => {
-    return name.split(' ').map(n => n[0]).join('').slice(0, 2);
+    if (!name || name.trim() === '') return 'U';
+    
+    // Remove extra spaces and trim
+    const cleanName = name.trim().replace(/\s+/g, ' ');
+    
+    // Check if name contains comma (format: "LASTNAME, FIRSTNAME")
+    if (cleanName.includes(',')) {
+      const parts = cleanName.split(',').map(p => p.trim()).filter(p => p.length > 0);
+      if (parts.length === 0) return 'U';
+      if (parts.length === 1) {
+        // Only last name, get first two letters
+        const lastname = parts[0];
+        return lastname.substring(0, 2).toUpperCase();
+      }
+      // Get first letter of last name and first letter of first name
+      const lastInitial = parts[0].charAt(0).toUpperCase();
+      const firstInitial = parts[1].split(' ')[0].charAt(0).toUpperCase();
+      return (lastInitial + firstInitial).slice(0, 2);
+    }
+    
+    // Regular format: "FIRSTNAME LASTNAME" or multiple words
+    const words = cleanName.split(' ').filter(word => word.length > 0);
+    if (words.length === 0) return 'U';
+    if (words.length === 1) {
+      // Single word, get first two letters
+      return words[0].substring(0, 2).toUpperCase();
+    }
+    
+    // Get first letter of first word and first letter of last word
+    const firstInitial = words[0].charAt(0).toUpperCase();
+    const lastInitial = words[words.length - 1].charAt(0).toUpperCase();
+    return (firstInitial + lastInitial).slice(0, 2);
   };
 
   // convert uppercase name to normal case
@@ -200,6 +217,29 @@ export default function ClassStudents({ instructor }: ClassStudentsProps) {
       )
       .join(', ');
   };
+
+  if (loading) {
+    return (
+      <View className="flex-1 bg-slate-50 items-center justify-center">
+        <ActivityIndicator size="large" color="#4285F4" />
+        <Text className="text-millionGrey mt-4">Loading students...</Text>
+      </View>
+    );
+  }
+
+  if (error) {
+    return (
+      <View className="flex-1 bg-slate-50 items-center justify-center px-6">
+        <Text className="text-red-600 text-base text-center mb-4">{error}</Text>
+        <Pressable
+          onPress={fetchStudents}
+          className="bg-metalDeluxe rounded-full px-6 py-3"
+        >
+          <Text className="text-white text-base">Retry</Text>
+        </Pressable>
+      </View>
+    );
+  }
 
   return (
     <View className="flex-1">
