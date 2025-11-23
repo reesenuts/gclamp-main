@@ -277,7 +277,7 @@ export default function ActivityDetail() {
         try {
           const commentsResponse = await lampService.getClassComments({
             p_actioncode: activity.id,
-            p_commentcode: '',
+            p_commentcode: 'com', // Activity comments use 'com' (same as class feed comments)
           });
 
           if (commentsResponse.status.rem === 'success' && commentsResponse.data) {
@@ -406,37 +406,54 @@ export default function ActivityDetail() {
       });
 
       if (response.status.rem === 'success') {
-        // Refresh comments
-        try {
-          const commentsResponse = await lampService.getClassComments({
-            p_actioncode: activity.id,
-            p_commentcode: '',
-          });
+        // Clear comment input
+        setNewComment('');
 
-          if (commentsResponse.status.rem === 'success' && commentsResponse.data) {
-            const apiComments = Array.isArray(commentsResponse.data) ? commentsResponse.data : [];
-            const transformedComments: Comment[] = apiComments.map((comment: any) => ({
-              id: comment.recno_fld?.toString() || comment.commentcode_fld?.toString() || '',
-              author: comment.author_fld || comment.fullname_fld || 'Unknown',
-              content: comment.content_fld || '',
-              timestamp: formatTimestamp(comment.datetime_fld || comment.date_fld),
-            }));
-            setComments(transformedComments);
-          } else if (commentsResponse.status.msg?.includes('No Records')) {
-            // No comments - set empty array
-            setComments([]);
-          }
-        } catch (err: any) {
-          // Handle "no records" error gracefully
-          const errorMsg = err?.message || err?.data?.message || '';
-          if (errorMsg.includes('No Records') || errorMsg.includes('no records') || err?.status === 404) {
-            setComments([]);
-          } else {
-            console.error('Error refreshing comments:', err);
+        // The addClassComment response might contain the comments
+        // If it does, use it directly; otherwise fetch them
+        if (response.data && Array.isArray(response.data)) {
+          const apiComments = response.data;
+          const transformedComments: Comment[] = apiComments.map((comment: any) => ({
+            id: comment.recno_fld?.toString() || comment.commentcode_fld?.toString() || '',
+            author: comment.author_fld || comment.fullname_fld || 'Unknown',
+            content: comment.content_fld || '',
+            timestamp: formatTimestamp(comment.datetime_fld || comment.date_fld),
+          }));
+          setComments(transformedComments);
+        } else {
+          // Small delay to ensure database commit completes
+          await new Promise(resolve => setTimeout(resolve, 300));
+
+          // Fetch comments
+          try {
+            const commentsResponse = await lampService.getClassComments({
+              p_actioncode: activity.id,
+              p_commentcode: 'com', // Activity comments use 'com' (same as class feed comments)
+            });
+
+            if (commentsResponse.status.rem === 'success' && commentsResponse.data) {
+              const apiComments = Array.isArray(commentsResponse.data) ? commentsResponse.data : [];
+              const transformedComments: Comment[] = apiComments.map((comment: any) => ({
+                id: comment.recno_fld?.toString() || comment.commentcode_fld?.toString() || '',
+                author: comment.author_fld || comment.fullname_fld || 'Unknown',
+                content: comment.content_fld || '',
+                timestamp: formatTimestamp(comment.datetime_fld || comment.date_fld),
+              }));
+              setComments(transformedComments);
+            } else if (commentsResponse.status.msg?.includes('No Records')) {
+              // No comments - set empty array
+              setComments([]);
+            }
+          } catch (err: any) {
+            // Handle "no records" error gracefully
+            const errorMsg = err?.message || err?.data?.message || '';
+            if (errorMsg.includes('No Records') || errorMsg.includes('no records') || err?.status === 404) {
+              setComments([]);
+            } else {
+              console.error('Error fetching comments after add:', err);
+            }
           }
         }
-
-        setNewComment('');
       } else {
         Alert.alert('Error', response.status.msg || 'Failed to add comment');
       }
