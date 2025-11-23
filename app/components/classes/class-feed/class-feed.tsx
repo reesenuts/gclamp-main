@@ -1,7 +1,8 @@
 import { ChatCircle, Copy, Image, Paperclip, PencilSimple, Trash } from "phosphor-react-native";
 import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Clipboard, Keyboard, Modal, Pressable, ScrollView, Text, View } from "react-native";
-import { authService, lampService } from "../../../services";
+import { authService, generalService, lampService } from "../../../services";
+import { SettingsResponse } from "../../../types/api";
 import { getErrorMessage } from "../../../utils/errorHandler";
 import ClassFeedComments from "./comments";
 import ClassFeedPostCard from "./post-card";
@@ -173,11 +174,67 @@ export default function ClassFeed({ courseCode, classcode, instructor, highlight
   };
 
   // Transform API post to Post type
+  // Parse file path from dir_fld
+  // Format: "filename?path/to/file" or "filename1?path1:filename2?path2" for multiple files
+  const parseFilePaths = (dirFld: string): Array<{ name: string; path: string; type: 'image' | 'file' }> => {
+    if (!dirFld || dirFld.trim() === '') return [];
+
+    const files: Array<{ name: string; path: string; type: 'image' | 'file' }> = [];
+    
+    // Split by colon to handle multiple files
+    const fileEntries = dirFld.split(':');
+    
+    fileEntries.forEach((entry) => {
+      if (entry.includes('?')) {
+        const [name, path] = entry.split('?');
+        const fileName = decodeURIComponent(name.trim());
+        const filePath = path.trim();
+        
+        // Determine if it's an image based on extension
+        const ext = fileName.split('.').pop()?.toLowerCase() || '';
+        const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext);
+        
+        files.push({
+          name: fileName,
+          path: filePath,
+          type: isImage ? 'image' : 'file',
+        });
+      } else {
+        // Fallback: if no '?' separator, treat entire string as path
+        const fileName = entry.split('/').pop() || 'Attachment';
+        const ext = fileName.split('.').pop()?.toLowerCase() || '';
+        const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext);
+        
+        files.push({
+          name: fileName,
+          path: entry.trim(),
+          type: isImage ? 'image' : 'file',
+        });
+      }
+    });
+    
+    return files;
+  };
+
   const transformPost = (apiPost: any, comments: Comment[] = []): Post => {
     // Determine if author is instructor (check if author matches instructor name or email)
     const isInstructor = apiPost.author_fld === instructor || 
                         apiPost.email_fld?.includes('@gordoncollege.edu.ph') ||
                         apiPost.role_fld === 'instructor';
+
+    // Parse attachments from dir_fld if withfile_fld is 1
+    let attachments: Array<{ type: 'image' | 'file'; name: string; url: string }> | undefined = undefined;
+    if (apiPost.withfile_fld === 1 || apiPost.withfile_fld === '1') {
+      const dirFld = apiPost.dir_fld || apiPost.filedir_fld || '';
+      if (dirFld) {
+        const parsedFiles = parseFilePaths(dirFld);
+        attachments = parsedFiles.map(file => ({
+          type: file.type,
+          name: file.name,
+          url: file.path, // Store path for downloading
+        }));
+      }
+    }
 
     return {
       id: apiPost.recno_fld?.toString() || apiPost.postcode_fld?.toString() || '',
@@ -185,9 +242,7 @@ export default function ClassFeed({ courseCode, classcode, instructor, highlight
       authorRole: isInstructor ? 'instructor' : 'student',
       content: apiPost.content_fld || '',
       timestamp: formatTimestamp(apiPost.datetime_fld || apiPost.date_fld),
-      attachments: apiPost.filedir_fld ? [
-        { type: 'file' as const, name: apiPost.filename_fld || 'Attachment', url: apiPost.filedir_fld }
-      ] : undefined,
+      attachments,
       likes: apiPost.likes_fld || 0,
       comments,
     };
@@ -329,21 +384,80 @@ export default function ClassFeed({ courseCode, classcode, instructor, highlight
   const [editingReply, setEditingReply] = useState<{ postId: string; commentId: string; replyId: string } | null>(null);
   const [editCommentText, setEditCommentText] = useState('');
   const [editReplyText, setEditReplyText] = useState('');
+  const [postAttachments, setPostAttachments] = useState<Array<{ id: string; uri: string; name: string; type: 'image' | 'file'; mimeType?: string }>>([]);
+  const [isPosting, setIsPosting] = useState(false);
 
   // create and add new post
   const handlePost = async () => {
-    if (!newPostContent.trim() || !actualClasscode || !currentUser) return;
+    if ((!newPostContent.trim() && postAttachments.length === 0) || !actualClasscode || !currentUser) return;
 
     try {
-      // Send exactly 5 parameters - backend will add datetime_fld automatically
+      setIsPosting(true);
+
+      // Step 1: Upload files if there are attachments
+      let filepath = '';
+      if (postAttachments.length > 0) {
+        // Get settings for academic year and semester
+        const settingsResponse = await generalService.getSettings();
+        if (settingsResponse.status.rem !== 'success' || !settingsResponse.data) {
+          Alert.alert('Error', 'Failed to load settings');
+          setIsPosting(false);
+          return;
+        }
+
+        const settings = settingsResponse.data as SettingsResponse;
+        const academicYear = settings.setting?.acadyear_fld || '';
+        const semester = settings.setting?.sem_fld || '';
+
+        if (!academicYear || !semester) {
+          Alert.alert('Error', 'Academic year or semester not found');
+          setIsPosting(false);
+          return;
+        }
+
+        // Prepare files for upload
+        const filesToUpload = postAttachments
+          .filter((attachment) => attachment.uri && attachment.uri.trim() !== '')
+          .map((attachment) => ({
+            uri: attachment.uri,
+            name: attachment.name,
+            type: attachment.mimeType || (attachment.type === 'image' ? 'image/jpeg' : 'application/octet-stream'),
+          }));
+
+        if (filesToUpload.length > 0) {
+          const uploadResponse = await lampService.uploadFile(
+            academicYear,
+            semester,
+            currentUser.id,
+            filesToUpload
+          );
+
+          if (uploadResponse.status.rem !== 'success') {
+            Alert.alert('Upload Failed', uploadResponse.status.msg || 'Failed to upload files. Please try again.');
+            setIsPosting(false);
+            return;
+          }
+
+          const uploadedFilepath = uploadResponse.data?.filepath;
+          if (!uploadedFilepath || uploadedFilepath.trim() === '') {
+            Alert.alert('Upload Issue', 'The server did not return file paths. Please try again.');
+            setIsPosting(false);
+            return;
+          }
+
+          filepath = uploadedFilepath;
+        }
+      }
+
+      // Step 2: Create post with file paths
       // The stored procedure expects: p_content, p_id, p_classcode, p_withfile, p_dir, p_date
       // The backend's saveCommon adds datetime_fld which should map to p_date
       const response = await lampService.addClassPost({
         p_content: newPostContent.trim(),
         p_id: currentUser.id,
         p_classcode: actualClasscode,
-        p_withfile: 0,
-        p_dir: '',
+        p_withfile: postAttachments.length > 0 ? 1 : 0,
+        p_dir: filepath,
       });
 
       if (response.status.rem === 'success') {
@@ -369,6 +483,7 @@ export default function ClassFeed({ courseCode, classcode, instructor, highlight
         }
 
     setNewPostContent('');
+    setPostAttachments([]);
     setShowCreateModal(false);
     Keyboard.dismiss();
       } else {
@@ -377,6 +492,8 @@ export default function ClassFeed({ courseCode, classcode, instructor, highlight
     } catch (err: any) {
       console.error('Error creating post:', err);
       Alert.alert('Error', getErrorMessage(err));
+    } finally {
+      setIsPosting(false);
     }
   };
 
@@ -918,10 +1035,14 @@ export default function ClassFeed({ courseCode, classcode, instructor, highlight
       newPostContent={newPostContent}
       currentUserName={currentUser?.fullname || 'User'}
       currentUserInitials={currentUser?.fullname.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() || 'U'}
+      attachments={postAttachments}
+      isPosting={isPosting}
       onContentChange={setNewPostContent}
+      onAttachmentsChange={setPostAttachments}
       onClose={() => {
         setShowCreateModal(false);
         setNewPostContent('');
+        setPostAttachments([]);
       }}
       onPost={handlePost}
     />

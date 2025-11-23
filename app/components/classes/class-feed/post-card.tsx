@@ -1,5 +1,11 @@
+import * as FileSystem from "expo-file-system";
+import * as Sharing from "expo-sharing";
 import { ChatCircle, DownloadSimple, Heart } from "phosphor-react-native";
-import { Pressable, Text, View } from "react-native";
+import { useState } from "react";
+import { ActivityIndicator, Alert, Image, Pressable, Text, View } from "react-native";
+import API_CONFIG from "../../../config/api";
+import { lampService } from "../../../services";
+import { getErrorMessage } from "../../../utils/errorHandler";
 import { getFileIcon } from "./utils";
 
 type Post = {
@@ -26,6 +32,80 @@ export default function ClassFeedPostCard({
   showComments,
   children,
 }: ClassFeedPostCardProps) {
+  const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
+
+  // Handle file download
+  const handleDownload = async (attachment: { type: 'image' | 'file'; name: string; url: string }) => {
+    if (!attachment.url) {
+      Alert.alert('Error', 'File path not available');
+      return;
+    }
+
+    try {
+      setDownloadingFileId(attachment.name);
+
+      // Download file from API
+      const downloadResult = await lampService.downloadFileBinary(attachment.url);
+
+      // Get file extension from filename
+      const mimeType = downloadResult.mimeType || 'application/octet-stream';
+
+      // Get cache directory
+      const FileSystemAny = FileSystem as any;
+      const cacheDir = FileSystemAny.cacheDirectory || FileSystemAny.documentDirectory;
+      
+      if (!cacheDir) {
+        Alert.alert(
+          'File System Not Available', 
+          'File system access is not available in your current Expo Go environment.\n\n' +
+          'To use file downloads, please:\n\n' +
+          '• Update Expo Go to the latest version\n' +
+          '• Or build a development/standalone app\n\n' +
+          'You can build a development build with:\n' +
+          'npx expo run:android (or run:ios)'
+        );
+        return;
+      }
+      
+      // Ensure directory exists
+      try {
+        const dirInfo = await FileSystem.getInfoAsync(cacheDir);
+        if (!dirInfo.exists) {
+          await FileSystem.makeDirectoryAsync(cacheDir, { intermediates: true });
+        }
+      } catch (dirError) {
+        // Directory might already exist, continue
+        console.log('Directory check:', dirError);
+      }
+      
+      // Sanitize filename to avoid path issues
+      const sanitizedFilename = attachment.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const fileUri = `${cacheDir}${sanitizedFilename}`;
+
+      // Write base64 data to file
+      await FileSystem.writeAsStringAsync(fileUri, downloadResult.data, {
+        encoding: 'base64' as any,
+      });
+
+      // Check if sharing is available
+      const isAvailable = await Sharing.isAvailableAsync();
+      if (isAvailable) {
+        // Share/open the file
+        await Sharing.shareAsync(fileUri, {
+          mimeType,
+          dialogTitle: `Open ${attachment.name}`,
+        });
+      } else {
+        Alert.alert('Success', `File downloaded to: ${fileUri}`);
+      }
+    } catch (err: any) {
+      console.error('Error downloading file:', err);
+      Alert.alert('Error', getErrorMessage(err) || 'Failed to download file');
+    } finally {
+      setDownloadingFileId(null);
+    }
+  };
+
   return (
     <View className="bg-white rounded-xl border border-crystalBell p-4 mb-4">
       {/* post author and timestamp */}
@@ -59,26 +139,77 @@ export default function ClassFeedPostCard({
       </View>
 
       {/* post text content */}
-      <Text className="text-twilightZone text-base mb-3">
-        {post.content}
-      </Text>
+      {post.content && (
+        <Text className="text-twilightZone text-base mb-3">
+          {post.content}
+        </Text>
+      )}
 
       {/* file attachments if any */}
       {post.attachments && post.attachments.length > 0 && (
         <View className="mb-3">
           {post.attachments.map((attachment, idx) => {
-            const { Icon, color } = getFileIcon(attachment.name);
-            return (
-              <View key={idx} className="bg-crystalBell/20 border border-crystalBell p-3 rounded-lg mb-2">
-                <View className="flex-row items-center">
-                  <Icon size={18} color={color} weight="regular" />
-                  <Text className="text-twilightZone ml-2 flex-1">{attachment.name}</Text>
-                  <Pressable className="p-2">
-                    <DownloadSimple size={20} color="#4285F4" weight="regular" />
-                  </Pressable>
+            if (attachment.type === 'image') {
+              // Display image preview
+              // Construct full URL from base URL and file path
+              // attachment.url is the path part (e.g., "files/2025-20261/faculty/202211557/1755228652.pdf")
+              const baseUrl = API_CONFIG.BASE_URL.replace('/student/lamp.php', '');
+              const imageUrl = `${baseUrl}/${attachment.url}`;
+              const isDownloading = downloadingFileId === attachment.name;
+              
+              return (
+                <View key={idx} className="mb-2 rounded-lg overflow-hidden border border-crystalBell">
+                  <Image 
+                    source={{ uri: imageUrl }}
+                    className="w-full"
+                    style={{ height: 300, backgroundColor: '#f0f0f0' }}
+                    resizeMode="cover"
+                  />
+                  <View className="p-2 bg-white flex-row items-center justify-between">
+                    <Text className="text-twilightZone text-sm flex-1" numberOfLines={1}>
+                      {attachment.name}
+                    </Text>
+                    <Pressable 
+                      onPress={() => handleDownload(attachment)}
+                      disabled={isDownloading}
+                      className="p-2"
+                    >
+                      {isDownloading ? (
+                        <ActivityIndicator size="small" color="#4285F4" />
+                      ) : (
+                        <DownloadSimple size={20} color="#4285F4" weight="regular" />
+                      )}
+                    </Pressable>
+                  </View>
                 </View>
-              </View>
-            );
+              );
+            } else {
+              // Display file attachment
+              const { Icon, color } = getFileIcon(attachment.name);
+              const isDownloading = downloadingFileId === attachment.name;
+              
+              return (
+                <View key={idx} className="bg-crystalBell/20 border border-crystalBell p-3 rounded-lg mb-2">
+                  <View className="flex-row items-center">
+                    <Icon size={18} color={color} weight="regular" />
+                    <Text className="text-twilightZone ml-2 flex-1" numberOfLines={1}>
+                      {attachment.name}
+                    </Text>
+                    <Pressable 
+                      onPress={() => handleDownload(attachment)}
+                      disabled={isDownloading}
+                      className="p-2"
+                    >
+                      {isDownloading ? (
+                        <ActivityIndicator size="small" color="#4285F4" />
+                      ) : (
+                        <DownloadSimple size={20} color="#4285F4" weight="regular" />
+                      )}
+                    </Pressable>
+                  </View>
+                </View>
+              );
+            }
           })}
         </View>
       )}
