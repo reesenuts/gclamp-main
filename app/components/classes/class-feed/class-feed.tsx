@@ -545,11 +545,11 @@ export default function ClassFeed({ courseCode, classcode, instructor, highlight
 
         // Use functional update to ensure we have the latest state
         setPosts(prevPosts => prevPosts.map(post => {
-          if (post.id === postId) {
+      if (post.id === postId) {
             return { ...post, comments };
-          }
-          return post;
-        }));
+      }
+      return post;
+    }));
       } else {
         Alert.alert('Error', response.status.msg || 'Failed to add reply');
       }

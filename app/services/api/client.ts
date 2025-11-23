@@ -244,7 +244,73 @@ class ApiClient {
   }
 
   /**
+   * Download file as binary
+   */
+  async downloadFileBinary(filepath: string): Promise<{ data: string; mimeType: string }> {
+    // Check token expiration
+    if (this.token && this.isTokenExpired()) {
+      await this.clearAuth();
+      throw createApiError({
+        message: 'Session expired. Please login again.',
+        status: 401,
+      });
+    }
+
+    const body: ApiRequest = {
+      payload: { filepath },
+    };
+
+    const url = `${API_CONFIG.BASE_URL}?request=download`;
+
+    const headers: Record<string, string> = {};
+    if (this.token) {
+      headers.Authorization = `Bearer ${this.token}`;
+    }
+
+    try {
+      // Request binary data as arraybuffer (React Native compatible)
+      const response = await this.client.post(url, body, {
+        headers,
+        responseType: 'arraybuffer',
+      });
+
+      // Convert arraybuffer to base64 for React Native
+      const arrayBuffer = response.data as ArrayBuffer;
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const base64data = btoa(binary);
+
+      // Try to determine MIME type from file extension
+      const ext = filepath.split('.').pop()?.toLowerCase() || '';
+      const mimeTypes: Record<string, string> = {
+        pdf: 'application/pdf',
+        doc: 'application/msword',
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ppt: 'application/vnd.ms-powerpoint',
+        pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        xls: 'application/vnd.ms-excel',
+        xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        png: 'image/png',
+        gif: 'image/gif',
+        txt: 'text/plain',
+      };
+      const mimeType = mimeTypes[ext] || 'application/octet-stream';
+
+      return { data: base64data, mimeType };
+    } catch (error) {
+      throw createApiError(error);
+    }
+  }
+
+  /**
    * Upload file(s)
+   * Based on Postman guide: upload/{acadyear}/{sem}/{userid}
+   * Uses form-data with file[] field name
    */
   async uploadFile(
     endpoint: string,
@@ -262,35 +328,111 @@ class ApiClient {
 
     const formData = new FormData();
 
-    // Add files
-    files.forEach((file) => {
-      formData.append('file[]', {
-        uri: file.uri,
-        name: file.name,
-        type: file.type,
-      } as any);
+    // Add files - React Native FormData format
+    // Based on Postman guide: Key should be 'file[]' (with brackets)
+    // In React Native, FormData works differently - we need to use indexed keys
+    // PHP expects $_FILES['file']['tmp_name'][0], $_FILES['file']['tmp_name'][1], etc.
+    // Try using 'file[0]', 'file[1]' format which React Native handles better
+    files.forEach((file, index) => {
+      const fileUri = file.uri;
+      const fileName = file.name;
+      const fileType = file.type || 'application/octet-stream';
+      
+      // Log file details for debugging
+      console.log(`Adding file ${index + 1} to FormData:`, {
+        uri: fileUri,
+        name: fileName,
+        type: fileType,
+      });
+      
+      // React Native FormData format
+      // The file object must be a plain object with uri, name, and type
+      // Try using indexed format 'file[0]', 'file[1]' which React Native handles better
+      const fileObject = {
+        uri: fileUri,
+        name: fileName,
+        type: fileType,
+      };
+      
+      // React Native FormData: Use 'file[]' as key (matches Postman guide exactly)
+      // The file object must be: { uri, name, type }
+      // When multiple files are appended with 'file[]', PHP should receive them as array
+      formData.append('file[]', fileObject as any);
     });
+    
+    // Log FormData contents (for debugging - FormData doesn't serialize well)
+    console.log('FormData created with', files.length, 'file(s)');
 
     // Add additional parameters
     Object.keys(additionalParams).forEach((key) => {
       formData.append(key, additionalParams[key]);
     });
 
+    // Build URL - endpoint format: upload/{acadyear}/{sem}/{userid}
+    // Based on Postman guide, the URL is: http://gclamp/testapilamp/student/upload/2024-2025/1/STUDENT123
+    // This suggests it might be a direct endpoint, not through lamp.php router
+    // However, the routes show it goes through lamp.php with ?request=upload/...
+    // For multipart/form-data, PHP automatically populates $_FILES regardless of routing
+    // Try using the router approach first (as that's what the code shows)
     const url = `${API_CONFIG.BASE_URL}?request=${endpoint}`;
-    const headers: Record<string, string> = {
-      'Content-Type': 'multipart/form-data',
-    };
+    
+    console.log('Upload URL:', url);
+    console.log('Endpoint:', endpoint);
+    
+    // Don't set Content-Type manually - axios will set it with boundary automatically
+    // This is critical for multipart/form-data uploads
+    const headers: Record<string, string> = {};
 
     if (this.token) {
       headers.Authorization = `Bearer ${this.token}`;
     }
 
     try {
-      const response = await this.client.post<ApiResponse>(url, formData, {
-        headers,
+      console.log('Upload request:', {
+        url,
+        fileCount: files.length,
+        fileNames: files.map(f => f.name),
+        endpoint,
+        hasAuth: !!this.token,
       });
-      return response.data;
+
+      // Use fetch instead of axios for file uploads in React Native
+      // fetch handles FormData natively and correctly in React Native
+      // axios might have issues with React Native FormData polyfill
+      const fetchHeaders: HeadersInit = {};
+      
+      if (this.token) {
+        fetchHeaders['Authorization'] = `Bearer ${this.token}`;
+      }
+      
+      // Don't set Content-Type - fetch will set it automatically with boundary
+      const response = await fetch(url, {
+        method: 'POST',
+        body: formData,
+        headers: fetchHeaders,
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Upload failed with status: ${response.status}`);
+      }
+      
+      const responseData: ApiResponse = await response.json();
+      
+      console.log('Upload response received:', {
+        status: responseData.status?.rem,
+        message: responseData.status?.msg,
+        hasFilepath: !!responseData.data?.filepath,
+        filepath: responseData.data?.filepath,
+        fullData: responseData.data,
+      });
+      
+      return responseData;
     } catch (error) {
+      console.error('Upload error details:', {
+        message: (error as any)?.message,
+        error,
+        url,
+      });
       throw createApiError(error);
     }
   }

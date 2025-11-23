@@ -1,6 +1,6 @@
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { Clock } from "phosphor-react-native";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import { authService, generalService, lampService } from "../../../services";
 import { SettingsResponse } from "../../../types/api";
@@ -81,12 +81,21 @@ const formatDateFromAPI = (dateStr: string): string => {
 };
 
 // Determine activity status based on submission data
-const determineStatus = (apiActivity: any): ActivityStatus => {
-  if (apiActivity.issubmitted_fld === 1) {
+// submissionMap: Map of actcode_fld (from submissions) -> submission data
+// Note: Activities have empty actcode_fld, so we use recno_fld to match with submission's actcode_fld
+const determineStatus = (apiActivity: any, submissionMap?: Map<string, any>): ActivityStatus => {
+  // Check if there's a submission for this activity
+  // Use recno_fld from activity to match with actcode_fld from submission
+  // (actcode_fld in activities is empty, but recno_fld contains the actual activity ID)
+  const activityId = apiActivity.recno_fld?.toString() || apiActivity.actcode_fld?.toString();
+  const submission = submissionMap?.get(activityId);
+  const isSubmitted = !!submission;
+  
+  if (isSubmitted) {
     // Check if submitted late
-    if (apiActivity.deadline_fld && apiActivity.datetime_submitted) {
+    if (apiActivity.deadline_fld && submission.datetime_fld) {
       const deadline = new Date(apiActivity.deadline_fld);
-      const submitted = new Date(apiActivity.datetime_submitted);
+      const submitted = new Date(submission.datetime_fld);
       if (submitted > deadline) {
         return 'late';
       }
@@ -103,8 +112,13 @@ const determineStatus = (apiActivity: any): ActivityStatus => {
 };
 
 // Transform API activity to Activity type
-const transformActivity = (apiActivity: any): Activity => {
-  const status = determineStatus(apiActivity);
+// submissionMap: Map of actcode_fld (from submissions) -> submission data
+// Note: Activities have empty actcode_fld, so we use recno_fld to match with submission's actcode_fld
+const transformActivity = (apiActivity: any, submissionMap?: Map<string, any>): Activity => {
+  const status = determineStatus(apiActivity, submissionMap);
+  // Use recno_fld from activity to match with actcode_fld from submission
+  const activityId = apiActivity.recno_fld?.toString() || apiActivity.actcode_fld?.toString();
+  const submission = submissionMap?.get(activityId);
   
   return {
     id: apiActivity.actcode_fld?.toString() || apiActivity.recno_fld?.toString() || '',
@@ -114,7 +128,7 @@ const transformActivity = (apiActivity: any): Activity => {
     points: apiActivity.totalscore_fld || 0,
     status,
     grade: apiActivity.isscored_fld === 1 ? apiActivity.score_fld : undefined,
-    submittedDate: apiActivity.datetime_submitted ? formatDateFromAPI(apiActivity.datetime_submitted).split(',')[0] : undefined,
+    submittedDate: submission?.datetime_fld ? formatDateFromAPI(submission.datetime_fld) : undefined,
     postedDate: formatDateFromAPI(apiActivity.datetime_fld || ''),
   };
 };
@@ -169,58 +183,109 @@ export default function ClassActivities({ courseCode, courseName, classcode }: C
     fetchClasscode();
   }, [classcode, courseCode]);
 
-  // Fetch activities
-  useEffect(() => {
-    const fetchActivities = async () => {
-      if (!actualClasscode) {
+  // Fetch activities (wrapped in useCallback for useFocusEffect)
+  const fetchActivities = useCallback(async () => {
+    if (!actualClasscode) {
+      setLoading(false);
+      return;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      // Fetch activities and submissions in parallel
+      const user = await authService.getCurrentUser();
+      if (!user) {
+        setError('Please login to view activities');
         setLoading(false);
         return;
       }
 
-      try {
-        setLoading(true);
-        setError(null);
-
-        const activitiesResponse = await lampService.getClassActivities({
+      const [activitiesResponse, submissionsResponse] = await Promise.all([
+        lampService.getClassActivities({
           p_classcode: actualClasscode,
-        });
+        }),
+        lampService.getAllSubmissions({
+          p_classcodes: `(${actualClasscode})`,
+          p_id: user.id,
+        }),
+      ]);
 
-        // Handle "No Records" case
-        if (activitiesResponse.status.rem !== 'success') {
-          // Check if it's "No Records" - that's okay, just means no activities
-          if (activitiesResponse.status.msg?.includes('No Records') || 
-              activitiesResponse.status.msg?.includes('no records')) {
-            setActivities([]);
-            setLoading(false);
-            return;
-          }
-          setError(activitiesResponse.status.msg || 'Failed to load activities');
+      // Handle "No Records" case for activities
+      if (activitiesResponse.status.rem !== 'success') {
+        // Check if it's "No Records" - that's okay, just means no activities
+        if (activitiesResponse.status.msg?.includes('No Records') || 
+            activitiesResponse.status.msg?.includes('no records')) {
+          setActivities([]);
           setLoading(false);
           return;
         }
-
-        // Handle null data (no activities)
-        const apiActivities = activitiesResponse.data && Array.isArray(activitiesResponse.data)
-          ? activitiesResponse.data
-          : [];
-
-        const transformedActivities = apiActivities.map(transformActivity);
-        setActivities(transformedActivities);
-      } catch (err: any) {
-        console.error('Error fetching activities:', err);
-        const errorMsg = err?.message || err?.data?.message || '';
-        if (errorMsg.includes('No Records') || errorMsg.includes('no records') || err?.status === 404) {
-          setActivities([]);
-        } else {
-          setError(getErrorMessage(err));
-        }
-      } finally {
+        setError(activitiesResponse.status.msg || 'Failed to load activities');
         setLoading(false);
+        return;
       }
-    };
 
-    fetchActivities();
+      // Handle null data (no activities)
+      const apiActivities = activitiesResponse.data && Array.isArray(activitiesResponse.data)
+        ? activitiesResponse.data
+        : [];
+
+      // Build submission map: actcode_fld -> submission data
+      const submissionMap = new Map<string, any>();
+      // Handle "No Records" case - that's okay, just means no submissions
+      if (submissionsResponse.status.rem === 'success' && submissionsResponse.data) {
+        const submissions = Array.isArray(submissionsResponse.data) 
+          ? submissionsResponse.data 
+          : [];
+        
+        submissions.forEach((submission: any) => {
+          // Submission's actcode_fld contains the activity ID (which matches activity's recno_fld)
+          const actcode = submission.actcode_fld?.toString();
+          
+          if (actcode) {
+            // If multiple submissions exist, keep the most recent one
+            const existing = submissionMap.get(actcode);
+            if (!existing || (submission.datetime_fld && existing.datetime_fld && 
+                new Date(submission.datetime_fld) > new Date(existing.datetime_fld))) {
+              submissionMap.set(actcode, submission);
+            }
+          }
+        });
+      } else if (submissionsResponse.status.msg?.includes('No Records') || 
+                 submissionsResponse.status.msg?.includes('no records')) {
+        // No submissions - that's fine, just means no activities are submitted yet
+        // submissionMap will remain empty
+      }
+
+      const transformedActivities = apiActivities.map((activity) => {
+        return transformActivity(activity, submissionMap);
+      });
+      setActivities(transformedActivities);
+    } catch (err: any) {
+      console.error('Error fetching activities:', err);
+      const errorMsg = err?.message || err?.data?.message || '';
+      if (errorMsg.includes('No Records') || errorMsg.includes('no records') || err?.status === 404) {
+        setActivities([]);
+      } else {
+        setError(getErrorMessage(err));
+      }
+    } finally {
+      setLoading(false);
+    }
   }, [actualClasscode]);
+
+  // Fetch activities when classcode changes
+  useEffect(() => {
+    fetchActivities();
+  }, [fetchActivities]);
+
+  // Refresh activities when screen comes into focus (e.g., after submitting)
+  useFocusEffect(
+    useCallback(() => {
+      fetchActivities();
+    }, [fetchActivities])
+  );
 
   const handleActivityClick = (activity: Activity) => {
     router.push({
@@ -237,6 +302,7 @@ export default function ClassActivities({ courseCode, courseName, classcode }: C
         postedDate: activity.postedDate || '',
         courseCode,
         courseName,
+        classcode, // Pass classcode for fetching comments
       }
     });
   };
@@ -280,7 +346,11 @@ export default function ClassActivities({ courseCode, courseName, classcode }: C
                         const apiActivities = activitiesResponse.data && Array.isArray(activitiesResponse.data)
                           ? activitiesResponse.data
                           : [];
-                        const transformedActivities = apiActivities.map(transformActivity);
+                        // Build empty submission map for this refresh (submissions will be fetched separately if needed)
+                        const emptySubmissionMap = new Map<string, any>();
+                        const transformedActivities = apiActivities.map((activity) => {
+                          return transformActivity(activity, emptySubmissionMap);
+                        });
                         setActivities(transformedActivities);
                         setError(null);
                       } else if (activitiesResponse.status.msg?.includes('No Records')) {

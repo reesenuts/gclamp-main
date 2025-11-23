@@ -169,6 +169,10 @@ class LampService {
     return apiClient.request('download', payload);
   }
 
+  async downloadFileBinary(filepath: string): Promise<{ data: string; mimeType: string }> {
+    return apiClient.downloadFileBinary(filepath);
+  }
+
   // Message Management
   async getMessages(payload: Record<string, any>): Promise<ApiResponse> {
     return apiClient.request('getmsg', payload);

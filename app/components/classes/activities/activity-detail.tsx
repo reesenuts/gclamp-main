@@ -1,7 +1,10 @@
+import * as DocumentPicker from "expo-document-picker";
+import * as FileSystem from "expo-file-system";
 import { router, useLocalSearchParams } from "expo-router";
+import * as Sharing from "expo-sharing";
 import { CaretLeft, Clock, DownloadSimple, File, FileDoc, FilePdf, Paperclip, Star, X } from "phosphor-react-native";
 import { useEffect, useState } from "react";
-import { Alert, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { authService, generalService, lampService } from "../../../services";
 import { SettingsResponse } from "../../../types/api";
@@ -19,6 +22,8 @@ type Attachment = {
   id: string;
   name: string;
   size: string;
+  uri: string; // File URI for upload
+  mimeType: string; // MIME type of the file
 };
 
 type InstructorFile = {
@@ -27,6 +32,7 @@ type InstructorFile = {
   type: 'pdf' | 'doc' | 'ppt' | 'xls';
   size: string;
   postedDate: string;
+  filepath: string; // Full file path for downloading
 };
 
 // Format date from API
@@ -118,9 +124,20 @@ export default function ActivityDetail() {
   const [isCommentsModalVisible, setIsCommentsModalVisible] = useState(false);
   // comment loading state
   const [isAddingComment, setIsAddingComment] = useState(false);
+  // download loading state
+  const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
+  // submission loading state
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Fetch classcode
+  // Fetch classcode (use from params if provided, otherwise look it up)
   useEffect(() => {
+    // If classcode is provided in params, use it directly
+    if (params.classcode) {
+      setClasscode(params.classcode as string);
+      return;
+    }
+
+    // Otherwise, look it up by matching courseCode with classes
     const fetchClasscode = async () => {
       try {
         const user = await authService.getCurrentUser();
@@ -154,7 +171,7 @@ export default function ActivityDetail() {
     };
 
     fetchClasscode();
-  }, [activity.courseCode]);
+  }, [activity.courseCode, params.classcode]);
 
   // Fetch activity details, files, and comments
   useEffect(() => {
@@ -181,21 +198,38 @@ export default function ActivityDetail() {
           );
 
           if (matchedActivity) {
-            // Update activity with API data
-            const isSubmitted = matchedActivity.issubmitted_fld === 1;
-            const deadline = matchedActivity.deadline_fld ? new Date(matchedActivity.deadline_fld) : null;
-            const now = new Date();
-            let status = 'not_started';
-            if (isSubmitted) {
-              if (matchedActivity.datetime_submitted && deadline) {
-                const submitted = new Date(matchedActivity.datetime_submitted);
-                status = submitted > deadline ? 'late' : 'done';
-              } else {
-                status = 'done';
+            // Fetch submission to get submission date and files
+            // Status is already determined from the list, but we need submission data for display
+            const user = await authService.getCurrentUser();
+            let submissionDate: string | undefined = undefined;
+            
+            if (user) {
+              try {
+                const submissionResponse = await lampService.getSubmission({
+                  p_id: user.id,
+                  p_classcode: classcode,
+                  p_actcode: activity.id,
+                });
+
+                if (submissionResponse.status.rem === 'success' && submissionResponse.data) {
+                  const submission = Array.isArray(submissionResponse.data) 
+                    ? submissionResponse.data[0] 
+                    : submissionResponse.data;
+                  
+                  if (submission) {
+                    // Get full formatted date (with time)
+                    submissionDate = submission.datetime_fld ? formatDateFromAPI(submission.datetime_fld) : undefined;
+                  }
+                }
+              } catch (submissionErr) {
+                // If submission fetch fails, keep existing status from params
+                console.log('Could not fetch submission:', submissionErr);
               }
-            } else if (deadline && now > deadline) {
-              status = 'missing';
             }
+
+            // Use status from params (already determined correctly in the list)
+            // We still fetch submission to get the submission date and files for display
+            // Status is already accurate from the activities list, so we trust it
 
             setActivity({
               id: matchedActivity.actcode_fld?.toString() || matchedActivity.recno_fld?.toString() || activity.id,
@@ -203,9 +237,9 @@ export default function ActivityDetail() {
               description: matchedActivity.desc_fld || activity.description,
               dueDate: formatDateFromAPI(matchedActivity.deadline_fld || ''),
               points: matchedActivity.totalscore_fld || activity.points,
-              status,
+              status: activity.status, // Use status from params (already determined correctly in the list)
               grade: matchedActivity.isscored_fld === 1 ? matchedActivity.score_fld : undefined,
-              submittedDate: matchedActivity.datetime_submitted ? formatDateFromAPI(matchedActivity.datetime_submitted).split(',')[0] : undefined,
+              submittedDate: submissionDate || undefined,
               postedDate: formatDateFromAPI(matchedActivity.datetime_fld || ''),
               courseCode: activity.courseCode,
               courseName: activity.courseName,
@@ -215,19 +249,25 @@ export default function ActivityDetail() {
             if (matchedActivity.filedir_fld) {
               const files: InstructorFile[] = [];
               // Handle single file or multiple files
+              // File paths can be in format: "filename?path/to/file" or just "path/to/file"
               const filePaths = Array.isArray(matchedActivity.filedir_fld) 
                 ? matchedActivity.filedir_fld 
                 : [matchedActivity.filedir_fld];
               
               filePaths.forEach((filePath: string) => {
                 if (filePath) {
-                  const filename = filePath.split('/').pop() || filePath;
+                  // Handle filepath format: "filename?path/to/file" or just "path/to/file"
+                  const [filename, path] = filePath.includes('?') 
+                    ? filePath.split('?') 
+                    : [filePath.split('/').pop() || filePath, filePath];
+                  
                   files.push({
                     id: filename,
                     name: filename,
                     type: getFileType(filename),
                     size: 'Unknown', // API doesn't provide size
                     postedDate: formatDateFromAPI(matchedActivity.datetime_fld || ''),
+                    filepath: path || filePath, // Use the path part or full filePath
                   });
                 }
               });
@@ -251,17 +291,27 @@ export default function ActivityDetail() {
                 ? submissionResponse.data[0] 
                 : submissionResponse.data;
               
-              if (submission?.filedir_fld) {
-                const filePaths = Array.isArray(submission.filedir_fld)
-                  ? submission.filedir_fld
-                  : [submission.filedir_fld];
+              // Submission table uses dir_fld (not filedir_fld)
+              if (submission?.dir_fld) {
+                // Handle file path format: "filename1?path1:filename2?path2" or single path
+                const filePathString = submission.dir_fld;
+                // Split by ':' to get individual files (if multiple)
+                const fileEntries = filePathString.includes(':') 
+                  ? filePathString.split(':')
+                  : [filePathString];
                 
-                const files: Attachment[] = filePaths.map((filePath: string, index: number) => {
-                  const filename = filePath.split('/').pop() || `file_${index + 1}`;
+                const files: Attachment[] = fileEntries.map((fileEntry: string, index: number) => {
+                  // Parse "filename?path" format
+                  const [filename, path] = fileEntry.includes('?') 
+                    ? fileEntry.split('?')
+                    : [fileEntry.split('/').pop() || `file_${index + 1}`, fileEntry];
+                  
                   return {
-                    id: filename,
+                    id: `submitted_${index}_${filename}`,
                     name: filename,
                     size: 'Unknown',
+                    uri: '', // Not needed for already submitted files
+                    mimeType: '', // Not needed for already submitted files
                   };
                 });
                 setAttachments(files);
@@ -305,19 +355,251 @@ export default function ActivityDetail() {
     fetchActivityData();
   }, [classcode, activity.id]);
 
+  // Format file size
+  const formatFileSize = (bytes: number): string => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+  };
+
   // add file attachment
-  const handleAddFile = () => {
-    const newFile: Attachment = {
-      id: Date.now().toString(),
-      name: `document_${attachments.length + 1}.pdf`,
-      size: '2.4 MB',
-    };
-    setAttachments([...attachments, newFile]);
+  const handleAddFile = async () => {
+    try {
+      // Pick document(s)
+      const result = await DocumentPicker.getDocumentAsync({
+        type: '*/*', // Allow all file types
+        multiple: true, // Allow multiple file selection
+        copyToCacheDirectory: true, // Copy to cache for upload
+      });
+
+      if (result.canceled) {
+        return;
+      }
+
+      // Handle single or multiple files
+      const pickedFiles = result.assets || [];
+      
+      console.log('DocumentPicker full result:', JSON.stringify(result, null, 2));
+      console.log('DocumentPicker assets:', JSON.stringify(pickedFiles, null, 2));
+      
+      const newAttachments: Attachment[] = pickedFiles.map((file, index) => {
+        // DocumentPicker returns: { uri, name, mimeType, size }
+        // Ensure we're accessing the correct properties
+        const fileUri = file.uri || (file as any).fileUri || '';
+        const fileName = file.name || (file as any).fileName || `file_${index + 1}`;
+        const fileMimeType = file.mimeType || (file as any).mimeType || 'application/octet-stream';
+        
+        console.log(`File ${index + 1} from DocumentPicker:`, {
+          rawFile: file,
+          extractedUri: fileUri,
+          extractedName: fileName,
+          extractedMimeType: fileMimeType,
+        });
+        
+        if (!fileUri) {
+          console.error('WARNING: File URI is empty!', file);
+          Alert.alert('Error', `File "${fileName}" does not have a valid URI. Please try selecting the file again.`);
+        }
+        
+        const attachment = {
+          id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+          name: fileName,
+          size: formatFileSize(file.size || 0),
+          uri: fileUri,
+          mimeType: fileMimeType,
+        };
+        
+        return attachment;
+      });
+
+      setAttachments([...attachments, ...newAttachments]);
+    } catch (err: any) {
+      console.error('Error picking document:', err);
+      Alert.alert('Error', 'Failed to pick file. Please try again.');
+    }
   };
 
   // remove file attachment
   const handleRemoveFile = (id: string) => {
     setAttachments(attachments.filter(a => a.id !== id));
+  };
+
+  // Helper function to proceed with submission after file upload
+  const proceedWithSubmission = async (filepath: string, user: any, classcode: string) => {
+    // Step 2: Save submission with uploaded file paths
+    // The backend returns filepath as "filename1?path1:filename2?path2"
+    
+    console.log('Saving submission with filepath:', filepath);
+    
+    // Backend's saveCommon method adds datetime_fld automatically
+    // So we don't need to send p_datetime
+    const response = await lampService.saveWork({
+      p_classcode: classcode,
+      p_actcode: activity.id,
+      p_id: user.id,
+      p_type: 'submission',
+      p_dir: filepath, // Use the filepath from upload response
+      p_issubmitted: 1,
+      p_isscored: 0,
+      p_score: 0,
+      // p_datetime is added automatically by backend's saveCommon method
+    });
+
+    console.log('Save work response:', JSON.stringify(response, null, 2));
+
+    if (response.status.rem === 'success') {
+      // Refresh activity data to update status and show submitted files
+      // Trigger the useEffect by updating a dependency or refetching
+      setLoading(true);
+      
+      // Small delay to ensure database commit completes
+      // Increased delay to allow database to process and join submission data
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Refetch activity data
+      try {
+        // Fetch activity details to update status
+        const activitiesResponse = await lampService.getClassActivities({
+          p_classcode: classcode,
+        });
+
+        // Store matchedActivity in a variable accessible outside the if block
+        let matchedActivityData: any = null;
+        
+        if (activitiesResponse.status.rem === 'success' && activitiesResponse.data) {
+          const activities = Array.isArray(activitiesResponse.data) ? activitiesResponse.data : [];
+          const matchedActivity = activities.find((act: any) => 
+            act.actcode_fld?.toString() === activity.id || 
+            act.recno_fld?.toString() === activity.id
+          );
+
+          if (matchedActivity) {
+            matchedActivityData = matchedActivity;
+            
+            // Update activity with API data (but don't set status yet - we'll do that after checking submission)
+            setActivity(prev => ({
+              ...prev,
+              id: matchedActivity.actcode_fld?.toString() || matchedActivity.recno_fld?.toString() || activity.id,
+              title: matchedActivity.title_fld || activity.title,
+              description: matchedActivity.desc_fld || activity.description,
+              dueDate: formatDateFromAPI(matchedActivity.deadline_fld || ''),
+              points: matchedActivity.totalscore_fld || activity.points,
+              grade: matchedActivity.isscored_fld === 1 ? matchedActivity.score_fld : undefined,
+              postedDate: formatDateFromAPI(matchedActivity.datetime_fld || ''),
+            }));
+          }
+        }
+
+        // Fetch submission files - also use this to determine submission status
+        const submissionResponse = await lampService.getSubmission({
+          p_id: user.id,
+          p_classcode: classcode,
+          p_actcode: activity.id,
+        });
+
+        let hasSubmission = false;
+        let submissionDate: string | undefined = undefined;
+
+        if (submissionResponse.status.rem === 'success' && submissionResponse.data) {
+          const submission = Array.isArray(submissionResponse.data) 
+            ? submissionResponse.data[0] 
+            : submissionResponse.data;
+          
+          // If submission exists, activity is submitted
+          if (submission) {
+            hasSubmission = true;
+            // Get submission date from datetime_fld
+            submissionDate = submission.datetime_fld ? formatDateFromAPI(submission.datetime_fld).split(',')[0] : undefined;
+            
+            if (submission?.dir_fld) {
+              // Handle file path format: "filename1?path1:filename2?path2" or single path
+              const filePathString = submission.dir_fld;
+              const fileEntries = filePathString.includes(':') 
+                ? filePathString.split(':')
+                : [filePathString];
+              
+              const files: Attachment[] = fileEntries.map((fileEntry: string, index: number) => {
+                const [filename, path] = fileEntry.includes('?') 
+                  ? fileEntry.split('?')
+                  : [fileEntry.split('/').pop() || `file_${index + 1}`, fileEntry];
+                
+                return {
+                  id: `submitted_${index}_${filename}`,
+                  name: filename,
+                  size: 'Unknown',
+                  uri: '',
+                  mimeType: '',
+                };
+              });
+              setAttachments(files);
+            }
+          }
+        }
+
+        // Update status based on submission
+        if (hasSubmission) {
+          // Get deadline from matchedActivity if available, otherwise use current activity state
+          let deadline: Date | null = null;
+          if (matchedActivityData?.deadline_fld) {
+            deadline = new Date(matchedActivityData.deadline_fld);
+          } else if (activity.dueDate) {
+            // Try to parse the formatted date string back to Date
+            try {
+              deadline = new Date(activity.dueDate);
+            } catch (e) {
+              // If parsing fails, deadline remains null
+            }
+          }
+          
+          let status = 'done'; // Default to done if submitted
+          
+          if (deadline && submissionDate) {
+            const submitted = new Date(submissionDate);
+            status = submitted > deadline ? 'late' : 'done';
+          }
+
+          // Update activity with submission status
+          setActivity(prev => ({
+            ...prev,
+            status,
+            submittedDate: submissionDate,
+          }));
+        } else {
+          // No submission - determine status based on deadline
+          let deadline: Date | null = null;
+          if (matchedActivityData?.deadline_fld) {
+            deadline = new Date(matchedActivityData.deadline_fld);
+          } else if (activity.dueDate) {
+            try {
+              deadline = new Date(activity.dueDate);
+            } catch (e) {
+              // If parsing fails, deadline remains null
+            }
+          }
+          
+          const now = new Date();
+          let status = 'not_started';
+          if (deadline && now > deadline) {
+            status = 'missing';
+          }
+          
+          setActivity(prev => ({
+            ...prev,
+            status,
+          }));
+        }
+      } catch (refreshErr) {
+        console.error('Error refreshing data:', refreshErr);
+      } finally {
+        setLoading(false);
+      }
+
+      Alert.alert('Success', 'Your work has been submitted successfully!');
+    } else {
+      Alert.alert('Error', response.status.msg || 'Failed to submit');
+    }
   };
 
   // submit assignment
@@ -333,9 +615,12 @@ export default function ActivityDetail() {
     }
 
     try {
+      setIsSubmitting(true);
+
       const user = await authService.getCurrentUser();
       if (!user) {
         Alert.alert('Error', 'Please login to submit');
+        setIsSubmitting(false);
         return;
       }
 
@@ -343,6 +628,7 @@ export default function ActivityDetail() {
       const settingsResponse = await generalService.getSettings();
       if (settingsResponse.status.rem !== 'success' || !settingsResponse.data) {
         Alert.alert('Error', 'Failed to load settings');
+        setIsSubmitting(false);
         return;
       }
 
@@ -352,33 +638,89 @@ export default function ActivityDetail() {
 
       if (!academicYear || !semester) {
         Alert.alert('Error', 'Academic year or semester not found');
+        setIsSubmitting(false);
         return;
       }
 
-      // TODO: Upload files first, then save submission
-      // For now, save submission with file directory (would be set after upload)
-      const now = new Date().toISOString();
-      const response = await lampService.saveWork({
-        p_classcode: classcode,
-        p_actcode: activity.id,
-        p_id: user.id,
-        p_type: 'submission', // or determine from activity type
-        p_dir: attachments.map(a => a.name).join(','), // Placeholder - would be actual file paths
-        p_issubmitted: 1,
-        p_isscored: 0,
-        p_score: 0,
-        p_datetime: now,
-      });
-
-      if (response.status.rem === 'success') {
-        Alert.alert('Success', 'Your work has been submitted successfully!');
-        router.back();
-      } else {
-        Alert.alert('Error', response.status.msg || 'Failed to submit');
+      // Step 1: Upload files
+      // Filter out attachments without URIs (these are already submitted files)
+      const filesToUpload = attachments
+        .filter((attachment) => attachment.uri && attachment.uri.trim() !== '')
+        .map((attachment) => {
+          console.log('Preparing file for upload:', {
+            name: attachment.name,
+            uri: attachment.uri,
+            mimeType: attachment.mimeType,
+          });
+          return {
+            uri: attachment.uri,
+            name: attachment.name,
+            type: attachment.mimeType || 'application/octet-stream',
+          };
+        });
+      
+      if (filesToUpload.length === 0) {
+        Alert.alert('Error', 'No valid files to upload. Please select files again.');
+        setIsSubmitting(false);
+        return;
       }
+      
+      console.log('Files to upload:', filesToUpload.length, 'files');
+
+      const uploadResponse = await lampService.uploadFile(
+        academicYear,
+        semester,
+        user.id,
+        filesToUpload
+      );
+
+      // Log upload response for debugging
+      console.log('Upload response:', JSON.stringify(uploadResponse, null, 2));
+
+      if (uploadResponse.status.rem !== 'success') {
+        Alert.alert('Upload Failed', uploadResponse.status.msg || 'Failed to upload files. Please try again.');
+        setIsSubmitting(false);
+        return;
+      }
+
+      // Check if filepath exists in response
+      const filepath = uploadResponse.data?.filepath;
+      
+      // Backend bug: returns success even when filepath is empty
+      // This happens when $_FILES['file'] is not populated correctly
+      if (!filepath || filepath.trim() === '') {
+        console.error('Upload succeeded but filepath is empty. Backend may not be receiving files correctly.');
+        console.error('Full upload response:', uploadResponse);
+        
+        Alert.alert(
+          'Upload Issue', 
+          'The server did not return file paths. This usually means:\n\n' +
+          '1. Files were not received by the server\n' +
+          '2. Backend file upload handling issue\n\n' +
+          'Please check backend logs or server file system.\n\n' +
+          'Question: Are the files actually being saved to the server?',
+          [
+            {
+              text: 'Cancel',
+              style: 'cancel',
+              onPress: () => {
+                setIsSubmitting(false);
+              },
+            },
+          ]
+        );
+        return;
+      }
+      
+      console.log('Filepath from upload:', filepath);
+      
+      // Proceed with submission
+      await proceedWithSubmission(filepath, user, classcode);
     } catch (err: any) {
       console.error('Error submitting:', err);
-      Alert.alert('Error', getErrorMessage(err));
+      Alert.alert('Error', getErrorMessage(err) || 'Failed to submit assignment');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -407,7 +749,7 @@ export default function ActivityDetail() {
 
       if (response.status.rem === 'success') {
         // Clear comment input
-        setNewComment('');
+    setNewComment('');
 
         // The addClassComment response might contain the comments
         // If it does, use it directly; otherwise fetch them
@@ -536,8 +878,80 @@ export default function ActivityDetail() {
   };
 
   // handle download instructor file
-  const handleDownloadInstructorFile = (file: InstructorFile) => {
-    Alert.alert('Download', `Downloading ${file.name}...`);
+  const handleDownloadInstructorFile = async (file: InstructorFile) => {
+    if (!file.filepath) {
+      Alert.alert('Error', 'File path not available');
+      return;
+    }
+
+    try {
+      setDownloadingFileId(file.id);
+
+      // Download file from API
+      const downloadResult = await lampService.downloadFileBinary(file.filepath);
+
+      // Get file extension from filename
+      const mimeType = downloadResult.mimeType || 'application/octet-stream';
+
+      // Get cache directory - access FileSystem constants
+      // Note: In some Expo Go versions, these might not be available
+      // They should be available on physical devices with latest Expo Go
+      const FileSystemAny = FileSystem as any;
+      const cacheDir = FileSystemAny.cacheDirectory || FileSystemAny.documentDirectory;
+      
+      if (!cacheDir) {
+        // File system directories are not available
+        // This can happen in Expo Go on some devices/versions
+        Alert.alert(
+          'File System Not Available', 
+          'File system access is not available in your current Expo Go environment.\n\n' +
+          'To use file downloads, please:\n\n' +
+          '• Update Expo Go to the latest version\n' +
+          '• Or build a development/standalone app\n\n' +
+          'You can build a development build with:\n' +
+          'npx expo run:android (or run:ios)'
+        );
+        return;
+      }
+      
+      // Ensure directory exists
+      try {
+        const dirInfo = await FileSystem.getInfoAsync(cacheDir);
+        if (!dirInfo.exists) {
+          await FileSystem.makeDirectoryAsync(cacheDir, { intermediates: true });
+        }
+      } catch (dirError) {
+        // Directory might already exist, continue
+        console.log('Directory check:', dirError);
+      }
+      
+      // Sanitize filename to avoid path issues
+      const sanitizedFilename = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const fileUri = `${cacheDir}${sanitizedFilename}`;
+
+      // Write base64 data to file
+      // Use 'base64' as string since EncodingType might not be available in types
+      await FileSystem.writeAsStringAsync(fileUri, downloadResult.data, {
+        encoding: 'base64' as any,
+      });
+
+      // Check if sharing is available
+      const isAvailable = await Sharing.isAvailableAsync();
+      if (isAvailable) {
+        // Share/open the file
+        await Sharing.shareAsync(fileUri, {
+          mimeType,
+          dialogTitle: `Open ${file.name}`,
+        });
+      } else {
+        Alert.alert('Success', `File downloaded to: ${fileUri}`);
+      }
+    } catch (err: any) {
+      console.error('Error downloading file:', err);
+      Alert.alert('Error', getErrorMessage(err) || 'Failed to download file');
+    } finally {
+      setDownloadingFileId(null);
+    }
   };
 
   // get status config and check if submitted
@@ -718,8 +1132,8 @@ Submit as a PDF file. Include a title page and ensure all citations are properly
 
       {/* scrollable content */}
       {!loading && !error && (
-        <ScrollView className="flex-1 mb-2" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
-          <View className="p-6">
+      <ScrollView className="flex-1 mb-2" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
+        <View className="p-6">
           {/* status badge */}
           <View className={`${statusConfig.bgColor} px-3 py-1 rounded-full self-start mb-4`}>
             <Text className={`${statusConfig.textColor} text-xs font-semibold`}>
@@ -790,8 +1204,16 @@ Submit as a PDF file. Include a title page and ensure all citations are properly
                     </View>
                     {/* download button */}
                     <View className="flex-row gap-2">
-                      <Pressable onPress={() => handleDownloadInstructorFile(file)} className="p-2" >
+                      <Pressable 
+                        onPress={() => handleDownloadInstructorFile(file)} 
+                        className="p-2"
+                        disabled={downloadingFileId === file.id}
+                      >
+                        {downloadingFileId === file.id ? (
+                          <ActivityIndicator size="small" color="#4285F4" />
+                        ) : (
                         <DownloadSimple size={18} color="#4285F4" weight="regular" />
+                        )}
                       </Pressable>
                     </View>
                   </View>
@@ -878,15 +1300,15 @@ Submit as a PDF file. Include a title page and ensure all citations are properly
               </View>
             )}
           </Pressable>
-          </View>
-        </ScrollView>
+        </View>
+      </ScrollView>
       )}
 
       {/* fixed bottom bar */}
       {!loading && !error && (
-        <SafeAreaView edges={['bottom']} className="bg-white border-t border-crystalBell">
-          <View className="px-6 py-4">
-            {!isSubmitted ? (
+      <SafeAreaView edges={['bottom']} className="bg-white border-t border-crystalBell">
+        <View className="px-6 py-4">
+          {!isSubmitted ? (
             <>
               {/* upload file button */}
               <Pressable onPress={handleAddFile} className="bg-white border border-crystalBell rounded-full p-5" >
@@ -896,10 +1318,23 @@ Submit as a PDF file. Include a title page and ensure all citations are properly
               </Pressable>
               {/* submit button (shown when files attached) */}
               {attachments.length > 0 && (
-                <Pressable onPress={handleSubmit} className="bg-seljukBlue rounded-full p-5 mt-3" >
+                <Pressable 
+                  onPress={handleSubmit} 
+                  className="bg-seljukBlue rounded-full p-5 mt-3"
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? (
+                    <View className="flex-row items-center justify-center">
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                      <Text className="text-white text-center font-semibold ml-2">
+                        Submitting...
+                      </Text>
+                    </View>
+                  ) : (
                   <Text className="text-white text-center font-semibold">
                     Submit Assignment
                   </Text>
+                  )}
                 </Pressable>
               )}
             </>
@@ -928,14 +1363,14 @@ Submit as a PDF file. Include a title page and ensure all citations are properly
                 <View className="flex-row items-center">
                   <Clock size={14} color="#999999" weight="fill" />
                   <Text className="text-millionGrey text-xs ml-2">
-                    Submitted on {activity.submittedDate} 11:59 PM
+                    Submitted on {activity.submittedDate || 'Unknown date'}
                   </Text>
                 </View>
               </View>
             </View>
           )}
         </View>
-        </SafeAreaView>
+      </SafeAreaView>
       )}
 
       {/* comments modal */}

@@ -1,5 +1,5 @@
-import { router } from "expo-router";
-import { useEffect, useState } from "react";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
 import { authService, generalService, lampService } from "../services";
 import { SettingsResponse, StudentClass, TodoListItem } from "../types/api";
@@ -19,8 +19,11 @@ type TodoItem = {
   date: string; // date for grouping (e.g., "November 15, Saturday")
   points: number;
   grade?: number;
-  submittedDate?: string;
+  submittedDate?: string; // Formatted date string for display
+  submittedDateTime?: string; // Raw datetime string for comparison
   postedDate?: string;
+  deadline?: string; // ISO date string for deadline comparison
+  classcode?: string; // Classcode for navigation to activity detail
 };
 
 // map activity status to todo status
@@ -113,17 +116,34 @@ export default function ToDoList() {
   };
 
   // Transform API todo item to TodoItem
-  const transformTodoItem = (apiTodo: TodoListItem, classInfo?: StudentClass): TodoItem => {
+  // submissionMap: Map of actcode_fld (from submissions) -> submission data
+  const transformTodoItem = (apiTodo: TodoListItem, classInfo?: StudentClass, submissionMap?: Map<string, any>): TodoItem => {
     const classcode = apiTodo.classcode_fld || '';
-    const courseInfo = courseDataMap[classcode] || {
-      name: apiTodo.subjdesc_fld || classcode,
-      color: courseColors[Math.abs(classcode.split('').reduce((a, b) => a + b.charCodeAt(0), 0)) % courseColors.length]
+    // Use subjdesc_fld from API first, then from classInfo, then from courseDataMap, then fallback to classcode
+    const subjectName = apiTodo.subjdesc_fld || classInfo?.subjdesc_fld || courseDataMap[classcode]?.name || classcode;
+    const courseInfo = {
+      name: subjectName,
+      color: courseDataMap[classcode]?.color || courseColors[Math.abs(classcode.split('').reduce((a, b) => a + b.charCodeAt(0), 0)) % courseColors.length]
     };
     
     // Determine status based on submission
+    // Note: Todo items have empty actcode_fld, so we use recno_fld to match with submission's actcode_fld
+    // (submission's actcode_fld contains the activity ID which matches todo's recno_fld)
+    const activityId = apiTodo.recno_fld?.toString() || apiTodo.actcode_fld?.toString();
+    const submission = submissionMap?.get(activityId);
+    const isSubmitted = !!submission || Number(apiTodo.issubmitted_fld) === 1;
+    
     let status: TodoStatus = 'not_started';
-    if (apiTodo.issubmitted_fld === 1) {
-      status = 'completed';
+    if (isSubmitted) {
+      // Check if submitted late
+      if (submission?.datetime_fld && apiTodo.deadline_fld) {
+        const deadline = new Date(apiTodo.deadline_fld);
+        const submitted = new Date(submission.datetime_fld);
+        // Still mark as 'completed' but we'll show "Late" label in UI if needed
+        status = 'completed';
+      } else {
+        status = 'completed';
+      }
     } else if (apiTodo.deadline_fld) {
       const deadline = new Date(apiTodo.deadline_fld);
       const now = new Date();
@@ -134,10 +154,14 @@ export default function ToDoList() {
     
     const deadlineDate = formatDateFromAPI(apiTodo.deadline_fld || '');
     const postedDate = formatDateFromAPI(apiTodo.datetime_fld || '');
-    const submittedDate = apiTodo.datetime_submitted ? formatDateFromAPI(apiTodo.datetime_submitted).formatted : undefined;
+    // Use submission datetime if available, otherwise use apiTodo.datetime_submitted
+    const submittedDate = submission?.datetime_fld 
+      ? formatDateFromAPI(submission.datetime_fld).formatted 
+      : (apiTodo.datetime_submitted ? formatDateFromAPI(apiTodo.datetime_submitted).formatted : undefined);
+    const submittedDateTime = submission?.datetime_fld || apiTodo.datetime_submitted || undefined;
     
-    return {
-      id: apiTodo.actcode_fld || '',
+      return {
+      id: apiTodo.recno_fld?.toString() || apiTodo.actcode_fld || '',
       courseName: courseInfo.name,
       courseCode: apiTodo.subjcode_fld || classcode,
       activityName: apiTodo.title_fld || '',
@@ -149,12 +173,15 @@ export default function ToDoList() {
       points: apiTodo.totalscore_fld || 0,
       grade: apiTodo.isscored_fld === 1 ? apiTodo.score_fld : undefined,
       submittedDate,
+      submittedDateTime, // Store raw datetime for late comparison
       postedDate: postedDate.formatted,
+      deadline: apiTodo.deadline_fld || undefined, // Store deadline for late comparison
+      classcode, // Store classcode for navigation to activity detail
     };
   };
 
-  // Fetch todo list data
-  const fetchTodoList = async () => {
+  // Fetch todo list data (wrapped in useCallback for useFocusEffect)
+  const fetchTodoList = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -245,11 +272,17 @@ export default function ToDoList() {
       // Step 5: Format class codes as "(40292, 40297, 40298)"
       const formattedClassCodes = `(${classCodes.join(', ')})`;
 
-      // Step 6: Get todo list
-      const todoResponse = await lampService.getTodoList({
-        p_classcodes: formattedClassCodes,
-        p_id: studentId,
-      });
+      // Step 6: Get todo list and submissions in parallel
+      const [todoResponse, submissionsResponse] = await Promise.all([
+        lampService.getTodoList({
+          p_classcodes: formattedClassCodes,
+          p_id: studentId,
+        }),
+        lampService.getAllSubmissions({
+          p_classcodes: formattedClassCodes,
+          p_id: studentId,
+        }),
+      ]);
 
       if (todoResponse.status.rem !== 'success' || !todoResponse.data) {
         setError('No todos found');
@@ -259,10 +292,35 @@ export default function ToDoList() {
 
       const apiTodos = todoResponse.data as TodoListItem[];
       
+      // Build submission map: actcode_fld -> submission data
+      const submissionMap = new Map<string, any>();
+      // Handle "No Records" case - that's okay, just means no submissions
+      if (submissionsResponse.status.rem === 'success' && submissionsResponse.data) {
+        const submissions = Array.isArray(submissionsResponse.data) 
+          ? submissionsResponse.data 
+          : [];
+        
+        submissions.forEach((submission: any) => {
+          const actcode = submission.actcode_fld?.toString();
+          if (actcode) {
+            // If multiple submissions exist, keep the most recent one
+            const existing = submissionMap.get(actcode);
+            if (!existing || (submission.datetime_fld && existing.datetime_fld && 
+                new Date(submission.datetime_fld) > new Date(existing.datetime_fld))) {
+              submissionMap.set(actcode, submission);
+            }
+          }
+        });
+      } else if (submissionsResponse.status.msg?.includes('No Records') || 
+                 submissionsResponse.status.msg?.includes('no records')) {
+        // No submissions - that's fine, just means no activities are submitted yet
+        // submissionMap will remain empty
+      }
+      
       // Step 7: Transform API data to TodoItem format
       const transformedTodos = apiTodos.map(todo => {
         const classInfo = classes.find(c => c.classcode_fld === todo.classcode_fld);
-        return transformTodoItem(todo, classInfo);
+        return transformTodoItem(todo, classInfo, submissionMap);
       });
 
       setTodos(transformedTodos);
@@ -279,11 +337,19 @@ export default function ToDoList() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
+  // Fetch todo list on mount
   useEffect(() => {
     fetchTodoList();
-  }, []);
+  }, [fetchTodoList]);
+
+  // Refresh todo list when screen comes into focus (e.g., after submitting)
+  useFocusEffect(
+    useCallback(() => {
+      fetchTodoList();
+    }, [fetchTodoList])
+  );
 
   // handle todo click - navigate to activity detail
   const handleTodoClick = (todo: TodoItem) => {
@@ -301,6 +367,7 @@ export default function ToDoList() {
         postedDate: todo.postedDate || '',
         courseCode: todo.courseCode,
         courseName: todo.courseName,
+        classcode: todo.classcode || '', // Pass classcode for fetching comments
       }
     });
   };
@@ -411,11 +478,15 @@ export default function ToDoList() {
                 // for completed tasks, check if submitted on time
                 let isOnTime = false;
                 let isLate = false;
-                if (todo.status === 'completed') {
-                  // if grade exists and is good, assume on-time; if grade is low, might be late
-                  // for simplicity, if submittedDate exists, show as on-time
-                  isOnTime = !!todo.submittedDate && (todo.grade === undefined || todo.grade >= 70);
-                  isLate = !!todo.submittedDate && !isOnTime;
+                if (todo.status === 'completed' && todo.submittedDateTime && todo.deadline) {
+                  // Compare submission datetime with deadline using raw datetime strings
+                  const submissionDate = new Date(todo.submittedDateTime);
+                  const deadline = new Date(todo.deadline);
+                  isLate = submissionDate > deadline;
+                  isOnTime = !isLate;
+                } else if (todo.status === 'completed' && todo.submittedDate) {
+                  // If no deadline or raw datetime, assume on-time
+                  isOnTime = true;
                 }
                 
                 return (
