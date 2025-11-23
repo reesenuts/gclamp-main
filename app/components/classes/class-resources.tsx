@@ -1,7 +1,11 @@
+import * as FileSystem from "expo-file-system";
+import { useFocusEffect } from "expo-router";
+import * as Sharing from "expo-sharing";
 import { CaretDown, DownloadSimple, FileDoc, FilePdf, FileText, FolderOpen, FolderSimple } from "phosphor-react-native";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, ScrollView, Text, View } from "react-native";
-import { lampService } from "../../services";
+import { authService, generalService, lampService } from "../../services";
+import { SettingsResponse } from "../../types/api";
 import { getErrorMessage } from "../../utils/errorHandler";
 
 type Resource = {
@@ -10,6 +14,7 @@ type Resource = {
   type: 'folder' | 'pdf' | 'doc' | 'ppt' | 'other';
   size?: string;
   uploadDate: string;
+  filepath?: string; // File path for downloading
   items?: Resource[];
 };
 
@@ -25,6 +30,7 @@ export default function ClassResources({ courseCode, classcode }: ClassResources
   const [error, setError] = useState<string | null>(null);
   const [actualClasscode, setActualClasscode] = useState<string | null>(classcode || null);
   const [resources, setResources] = useState<Resource[]>([]);
+  const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
 
   // Format date from API
   const formatDateFromAPI = (dateStr: string): string => {
@@ -56,7 +62,21 @@ export default function ClassResources({ courseCode, classcode }: ClassResources
 
   // Transform API resource to Resource type
   const transformResource = (apiResource: any): Resource => {
-    const filename = apiResource.filedir_fld?.split('/').pop() || apiResource.title_fld || 'Untitled';
+    // Extract filepath from filedir_fld
+    // Format can be: "filename?path/to/file" or just "path/to/file"
+    let filepath: string | undefined = undefined;
+    if (apiResource.filedir_fld) {
+      const filedir = apiResource.filedir_fld;
+      if (filedir.includes('?')) {
+        // Format: "filename?path/to/file" - extract the path part
+        filepath = filedir.split('?')[1];
+      } else {
+        // Format: "path/to/file" - use as is
+        filepath = filedir;
+      }
+    }
+    
+    const filename = filepath?.split('/').pop() || apiResource.title_fld || 'Untitled';
     const hasFile = apiResource.withfile_fld === 1 || apiResource.withfile_fld === '1';
     
     return {
@@ -65,6 +85,7 @@ export default function ClassResources({ courseCode, classcode }: ClassResources
       type: hasFile ? getFileTypeFromName(filename) : 'other',
       size: formatFileSize(apiResource.size_fld),
       uploadDate: formatDateFromAPI(apiResource.datetime_fld),
+      filepath, // Store filepath for downloading
     };
   };
 
@@ -113,8 +134,50 @@ export default function ClassResources({ courseCode, classcode }: ClassResources
     return result;
   };
 
-  // Fetch resources from API
-  const fetchResources = async () => {
+  // Fetch classcode if not provided (similar to other components)
+  useEffect(() => {
+    const fetchClasscode = async () => {
+      if (classcode) {
+        setActualClasscode(classcode);
+        return;
+      }
+
+      try {
+        const user = await authService.getCurrentUser();
+        if (!user) return;
+
+        const settingsResponse = await generalService.getSettings();
+        if (settingsResponse.status.rem !== 'success' || !settingsResponse.data) return;
+
+        const settings = settingsResponse.data as SettingsResponse;
+        const academicYear = settings.setting?.acadyear_fld || '';
+        const semester = settings.setting?.sem_fld || '';
+
+        if (!academicYear || !semester) return;
+
+        const classesResponse = await lampService.getStudentClasses({
+          p_id: user.id,
+          p_ay: academicYear,
+          p_sem: String(semester),
+        });
+
+        if (classesResponse.status.rem === 'success' && classesResponse.data) {
+          const classes = Array.isArray(classesResponse.data) ? classesResponse.data : [];
+          const matchedClass = classes.find((cls: any) => cls.subjcode_fld === courseCode);
+          if (matchedClass?.classcode_fld) {
+            setActualClasscode(matchedClass.classcode_fld);
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching classcode:', err);
+      }
+    };
+
+    fetchClasscode();
+  }, [classcode, courseCode]);
+
+  // Fetch resources (wrapped in useCallback for useFocusEffect)
+  const fetchResources = useCallback(async () => {
     if (!actualClasscode) {
       setLoading(false);
       return;
@@ -151,28 +214,23 @@ export default function ClassResources({ courseCode, classcode }: ClassResources
     } finally {
       setLoading(false);
     }
-  };
-
-  // Fetch classcode if not provided (similar to other components)
-  useEffect(() => {
-    const fetchClasscode = async () => {
-      if (classcode) {
-        setActualClasscode(classcode);
-      } else {
-        // If classcode not provided, try to fetch it
-        // This would require getting settings and classes - for now, just set loading to false
-        setLoading(false);
-      }
-    };
-    fetchClasscode();
-  }, [classcode]);
+  }, [actualClasscode]);
 
   // Fetch resources when classcode is available
   useEffect(() => {
     if (actualClasscode) {
       fetchResources();
     }
-  }, [actualClasscode]);
+  }, [fetchResources]);
+
+  // Refresh resources when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      if (actualClasscode) {
+        fetchResources();
+      }
+    }, [fetchResources, actualClasscode])
+  );
 
 
   // toggle folder expand/collapse
@@ -183,14 +241,86 @@ export default function ClassResources({ courseCode, classcode }: ClassResources
     });
   };
 
-  // handle view file action
+  // handle view file action (same as download for now)
   const handleView = (resource: Resource) => {
-    Alert.alert('View File', `Opening ${resource.name}...`);
+    if (resource.filepath) {
+      handleDownload(resource);
+    } else {
+      Alert.alert('No File', 'This resource does not have an attached file.');
+    }
   };
 
   // handle download file action
-  const handleDownload = (resource: Resource) => {
-    Alert.alert('Download', `Downloading ${resource.name}...`);
+  const handleDownload = async (resource: Resource) => {
+    if (!resource.filepath) {
+      Alert.alert('Error', 'File path not available');
+      return;
+    }
+
+    try {
+      setDownloadingFileId(resource.id);
+
+      // Download file from API
+      const downloadResult = await lampService.downloadFileBinary(resource.filepath);
+
+      // Get file extension from filename
+      const mimeType = downloadResult.mimeType || 'application/octet-stream';
+
+      // Get cache directory - access FileSystem constants
+      const FileSystemAny = FileSystem as any;
+      const cacheDir = FileSystemAny.cacheDirectory || FileSystemAny.documentDirectory;
+      
+      if (!cacheDir) {
+        // File system directories are not available
+        Alert.alert(
+          'File System Not Available', 
+          'File system access is not available in your current Expo Go environment.\n\n' +
+          'To use file downloads, please:\n\n' +
+          '• Update Expo Go to the latest version\n' +
+          '• Or build a development/standalone app\n\n' +
+          'You can build a development build with:\n' +
+          'npx expo run:android (or run:ios)'
+        );
+        return;
+      }
+      
+      // Ensure directory exists
+      try {
+        const dirInfo = await FileSystem.getInfoAsync(cacheDir);
+        if (!dirInfo.exists) {
+          await FileSystem.makeDirectoryAsync(cacheDir, { intermediates: true });
+        }
+      } catch (dirError) {
+        // Directory might already exist, continue
+        console.log('Directory check:', dirError);
+      }
+      
+      // Sanitize filename to avoid path issues
+      const sanitizedFilename = resource.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const fileUri = `${cacheDir}${sanitizedFilename}`;
+
+      // Write base64 data to file
+      await FileSystem.writeAsStringAsync(fileUri, downloadResult.data, {
+        encoding: 'base64' as any,
+      });
+
+      // Check if sharing is available
+      const isAvailable = await Sharing.isAvailableAsync();
+      if (isAvailable) {
+        // Share/open the file
+        await Sharing.shareAsync(fileUri, {
+          mimeType,
+          dialogTitle: `Open ${resource.name}`,
+        });
+      } else {
+        Alert.alert('Success', `File downloaded to: ${fileUri}`);
+      }
+    } catch (err: any) {
+      console.error('Error downloading file:', err);
+      Alert.alert('Error', getErrorMessage(err) || 'Failed to download file');
+    } finally {
+      setDownloadingFileId(null);
+    }
   };
 
   // get icon based on file type
@@ -276,8 +406,13 @@ export default function ClassResources({ courseCode, classcode }: ClassResources
                 <Pressable 
                   onPress={() => handleDownload(resource)}
                   className="p-2 rounded-lg"
+                  disabled={downloadingFileId === resource.id || !resource.filepath}
                 >
-                  <DownloadSimple size={20} color="#4285F4" weight="regular" />
+                  {downloadingFileId === resource.id ? (
+                    <ActivityIndicator size="small" color="#4285F4" />
+                  ) : (
+                    <DownloadSimple size={20} color={resource.filepath ? "#4285F4" : "#999999"} weight="regular" />
+                  )}
                 </Pressable>
               </View>
             )}
