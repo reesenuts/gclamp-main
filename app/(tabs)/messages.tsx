@@ -1,14 +1,19 @@
-import { router } from "expo-router";
-import { MagnifyingGlass } from "phosphor-react-native";
-import { useState } from "react";
-import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { router, useFocusEffect } from "expo-router";
+import { MagnifyingGlass, Plus } from "phosphor-react-native";
+import { useCallback, useEffect, useState } from "react";
+import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { authService, initializeFirebase, isFirebaseConfigured, messagingService } from "../services";
+import { Conversation } from "../services/messaging.service";
+import { getErrorMessage } from "../utils/errorHandler";
 
-type Message = {
+type MessageListItem = {
   id: string;
+  conversationId: string;
   name: string;
   lastMessage: string;
   time: string;
   role: 'instructor' | 'student';
+  otherUserId: string; // User ID of the other participant
 };
 
 // get initials from name
@@ -30,57 +35,178 @@ const toNormalCase = (name: string) => {
     .join(', ');
 };
 
-// messages data - only faculty (instructors) to students conversations
-const messages: Message[] = [
-  {
-    id: '1',
-    name: 'Erlinda Abarintos',
-    lastMessage: "Good morning, Ma'am. May I ask if the draft submission deadline is still this Friday?",
-    time: "3:16 PM",
-    role: 'instructor',
-  },
-  {
-    id: '2',
-    name: 'Melner Balce',
-    lastMessage: "Yes, both topics are included.",
-    time: "4:15 PM",
-    role: 'instructor',
-  },
-  {
-    id: '3',
-    name: 'Loudel Manaloto',
-    lastMessage: "For now, please stick with Unity since that's what we'll be using in class. You may use the lab computers if your...",
-    time: "8/12/25",
-    role: 'instructor',
-  },
-];
+// Format timestamp to relative time
+const formatTimestamp = (date: Date): string => {
+  const now = new Date();
+  const diff = now.getTime() - date.getTime();
+  const seconds = Math.floor(diff / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  if (days > 0) {
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  } else if (hours > 0) {
+    return `${hours}h ago`;
+  } else if (minutes > 0) {
+    return `${minutes}m ago`;
+  } else {
+    return 'Just now';
+  }
+};
 
 export default function Messages() {
   const [search, setSearch] = useState("");
   const [isFocused, setIsFocused] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<MessageListItem[]>([]);
+  const [currentUser, setCurrentUser] = useState<{ id: string; fullname: string } | null>(null);
 
-  const filteredMessages = messages.filter((msg) =>
+  // Initialize Firebase and get current user
+  useEffect(() => {
+    const initialize = async () => {
+      try {
+        // Initialize Firebase if configured
+        if (isFirebaseConfigured()) {
+          initializeFirebase();
+        }
+
+        // Get current user
+        const user = await authService.getCurrentUser();
+        if (user) {
+          setCurrentUser({ id: user.id, fullname: user.fullname });
+        } else {
+          setError('Please login to view messages');
+          setLoading(false);
+        }
+      } catch (err: any) {
+        console.error('Error initializing:', err);
+        setError(getErrorMessage(err));
+        setLoading(false);
+      }
+    };
+
+    initialize();
+  }, []);
+
+  // Subscribe to conversations
+  useEffect(() => {
+    if (!currentUser || !isFirebaseConfigured()) {
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    const unsubscribe = messagingService.subscribeToConversations(
+      currentUser.id,
+      (firestoreConversations: Conversation[]) => {
+        try {
+          // Transform Firestore conversations to MessageListItem
+          const transformed: MessageListItem[] = firestoreConversations.map((conv) => {
+            // Get the other participant (not the current user)
+            const otherParticipantId = conv.participants.find(id => id !== currentUser.id) || '';
+            const otherParticipantName = conv.participantNames?.[otherParticipantId] || 'Unknown User';
+            
+            // Determine role (for now, assume instructor if email contains @gordoncollege.edu.ph)
+            // You can enhance this by storing role in Firebase or fetching from backend
+            const role: 'instructor' | 'student' = otherParticipantName.includes('@') 
+              ? 'instructor' 
+              : 'student';
+
+            return {
+              id: conv.id,
+              conversationId: conv.id,
+              name: otherParticipantName,
+              lastMessage: conv.lastMessage || 'No messages yet',
+              time: formatTimestamp(conv.lastMessageTime),
+              role,
+              otherUserId: otherParticipantId,
+            };
+          });
+
+          setConversations(transformed);
+          setError(null);
+        } catch (err: any) {
+          console.error('Error transforming conversations:', err);
+          setError(getErrorMessage(err));
+        } finally {
+          setLoading(false);
+        }
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, [currentUser]);
+
+  // Refresh on focus
+  useFocusEffect(
+    useCallback(() => {
+      // Conversations are already subscribed, so they'll update automatically
+    }, [])
+  );
+
+  const filteredMessages = conversations.filter((msg) =>
     msg.name.toLowerCase().includes(search.toLowerCase())
   );
 
   // handle message click - navigate to chat detail
-  const handleMessageClick = (message: Message) => {
+  const handleMessageClick = (message: MessageListItem) => {
     router.push({
       pathname: '/components/chat-detail' as any,
       params: {
-        id: message.id,
+        conversationId: message.conversationId,
+        otherUserId: message.otherUserId,
         name: message.name,
         role: message.role,
       }
     });
   };
 
+  if (loading) {
+    return (
+      <View className="flex-1 px-6 bg-white items-center justify-center">
+        <ActivityIndicator size="large" color="#4285F4" />
+        <Text className="text-millionGrey mt-4">Loading conversations...</Text>
+      </View>
+    );
+  }
+
+  if (error) {
+    return (
+      <View className="flex-1 px-6 bg-white items-center justify-center">
+        <Text className="text-red-600 text-base text-center mb-4">{error}</Text>
+        {!isFirebaseConfigured() && (
+          <Text className="text-millionGrey text-sm text-center">
+            Firebase is not configured. Please update app/config/firebase.ts with your Firebase credentials.
+          </Text>
+        )}
+      </View>
+    );
+  }
+
+  // Handle new message button
+  const handleNewMessage = () => {
+    router.push('/components/contact-picker' as any);
+  };
+
   return (
     <View className="flex-1 px-6 bg-white">
-      {/* searchbar */}
-      <View className="mb-4 rounded-full" style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 16, height: 50, backgroundColor: isFocused ? "#FFFFFF" : "#F9F9F9", borderWidth: 1, borderColor: isFocused ? "#EFEFEF" : "transparent", }} >
-        <MagnifyingGlass size={20} color={isFocused ? "#191815" : "#999999"} weight="regular" style={{ marginRight: 10 }} />
-        <TextInput value={search} onChangeText={setSearch} placeholder="Search" placeholderTextColor={isFocused ? "#191815" : "#999999"} className="flex-1 font-base" style={{ paddingVertical: 0, textAlignVertical: "center", includeFontPadding: false, color: "#191815", }} onFocus={() => setIsFocused(true)} onBlur={() => setIsFocused(false)} />
+      {/* searchbar with new message button */}
+      <View className="flex-row items-center mb-4 gap-3">
+        <View className="flex-1 rounded-full" style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 16, height: 50, backgroundColor: isFocused ? "#FFFFFF" : "#F9F9F9", borderWidth: 1, borderColor: isFocused ? "#EFEFEF" : "transparent", }} >
+          <MagnifyingGlass size={20} color={isFocused ? "#191815" : "#999999"} weight="regular" style={{ marginRight: 10 }} />
+          <TextInput value={search} onChangeText={setSearch} placeholder="Search" placeholderTextColor={isFocused ? "#191815" : "#999999"} className="flex-1 font-base" style={{ paddingVertical: 0, textAlignVertical: "center", includeFontPadding: false, color: "#191815", }} onFocus={() => setIsFocused(true)} onBlur={() => setIsFocused(false)} />
+        </View>
+        <Pressable
+          onPress={handleNewMessage}
+          className="bg-seljukBlue rounded-full p-3 active:opacity-80"
+          style={{ width: 50, height: 50, justifyContent: 'center', alignItems: 'center' }}
+        >
+          <Plus size={20} color="#FFFFFF" weight="bold" />
+        </Pressable>
       </View>
 
       {/* messages list */}
@@ -110,11 +236,12 @@ export default function Messages() {
             </Pressable>
           ))}
         </ScrollView>
-      ) : (
-        <View className="flex-1 items-center justify-center">
-          <Text className="text-millionGrey text-base">No messages found.</Text>
-        </View>
-      )}
+       ) : (
+         <View className="flex-1 items-center justify-center">
+           <Text className="text-millionGrey text-base">No conversations yet.</Text>
+           <Text className="text-millionGrey text-sm mt-2">Tap the + button to start a new conversation</Text>
+         </View>
+       )}
     </View>
   );
 }
