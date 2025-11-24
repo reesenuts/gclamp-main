@@ -16,7 +16,7 @@ const DEV_API_URL = 'http://192.168.1.2/testapilamp/student/lamp.php'; // Update
 
 const API_BASE_URL = __DEV__
   ? DEV_API_URL
-  : 'http://gclamp/testapilamp/student/lamp.php';
+  : 'http://localhost/testapilamp/student/lamp.php';
 
 export const API_CONFIG = {
   BASE_URL: API_BASE_URL,
