@@ -103,27 +103,30 @@ export default function Messages() {
       (firestoreConversations: Conversation[]) => {
         try {
           // Transform Firestore conversations to MessageListItem
-          const transformed: MessageListItem[] = firestoreConversations.map((conv) => {
-            // Get the other participant (not the current user)
-            const otherParticipantId = conv.participants.find(id => id !== currentUser.id) || '';
-            const otherParticipantName = conv.participantNames?.[otherParticipantId] || 'Unknown User';
-            
-            // Determine role (for now, assume instructor if email contains @gordoncollege.edu.ph)
-            // You can enhance this by storing role in Firebase or fetching from backend
-            const role: 'instructor' | 'student' = otherParticipantName.includes('@') 
-              ? 'instructor' 
-              : 'student';
+          // Filter out conversations with no messages (empty lastMessage)
+          const transformed: MessageListItem[] = firestoreConversations
+            .filter((conv) => conv.lastMessage && conv.lastMessage.trim() !== '')
+            .map((conv) => {
+              // Get the other participant (not the current user)
+              const otherParticipantId = conv.participants.find(id => id !== currentUser.id) || '';
+              const otherParticipantName = conv.participantNames?.[otherParticipantId] || 'Unknown User';
+              
+              // Determine role (for now, assume instructor if email contains @gordoncollege.edu.ph)
+              // You can enhance this by storing role in Firebase or fetching from backend
+              const role: 'instructor' | 'student' = otherParticipantName.includes('@') 
+                ? 'instructor' 
+                : 'student';
 
-            return {
-              id: conv.id,
-              conversationId: conv.id,
-              name: otherParticipantName,
-              lastMessage: conv.lastMessage || 'No messages yet',
-              time: formatTimestamp(conv.lastMessageTime),
-              role,
-              otherUserId: otherParticipantId,
-            };
-          });
+              return {
+                id: conv.id,
+                conversationId: conv.id,
+                name: otherParticipantName,
+                lastMessage: conv.lastMessage || 'No messages yet',
+                time: formatTimestamp(conv.lastMessageTime),
+                role,
+                otherUserId: otherParticipantId,
+              };
+            });
 
           setConversations(transformed);
           setError(null);

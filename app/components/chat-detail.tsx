@@ -64,43 +64,23 @@ export default function ChatDetail() {
     fetchUser();
   }, []);
 
-  // Get or create conversation if not provided
+  // Set conversation ID if provided in params (existing conversation)
   useEffect(() => {
-    const setupConversation = async () => {
-      if (!currentUser || !otherUserId) return;
-      
-      // If conversationId is already provided in params, use it
-      if (conversationId && !actualConversationId) {
-        setActualConversationId(conversationId);
-        return;
-      }
+    if (conversationId && !actualConversationId) {
+      setActualConversationId(conversationId);
+    }
+  }, [conversationId, actualConversationId]);
 
-      // If we already have a conversation ID, don't create a new one
-      if (actualConversationId) return;
-
-      try {
-        setLoading(true);
-        // Get or create conversation
-        const convId = await messagingService.getOrCreateConversation(
-          currentUser.id,
-          otherUserId,
-          currentUser.fullname,
-          contactName
-        );
-        setActualConversationId(convId);
-      } catch (err: any) {
-        console.error('Error setting up conversation:', err);
-        Alert.alert('Error', getErrorMessage(err) || 'Failed to start conversation');
+  // Subscribe to messages (only if conversation exists)
+  useEffect(() => {
+    if (!actualConversationId || !currentUser) {
+      // If no conversation exists yet, set loading to false and show empty state
+      if (currentUser) {
         setLoading(false);
+        setMessages([]);
       }
-    };
-
-    setupConversation();
-  }, [currentUser, otherUserId, contactName, conversationId, actualConversationId]);
-
-  // Subscribe to messages
-  useEffect(() => {
-    if (!actualConversationId || !currentUser) return;
+      return;
+    }
 
     setLoading(true);
     const unsubscribe = messagingService.subscribeToMessages(
@@ -143,15 +123,28 @@ export default function ChatDetail() {
 
   // Send message
   const handleSendMessage = async () => {
-    if (!messageInput.trim() || !actualConversationId || !currentUser || sending) return;
+    if (!messageInput.trim() || !currentUser || sending) return;
 
     const content = messageInput.trim();
     setMessageInput('');
     setSending(true);
 
     try {
+      // Get or create conversation if it doesn't exist
+      let convId = actualConversationId;
+      if (!convId) {
+        convId = await messagingService.getOrCreateConversation(
+          currentUser.id,
+          otherUserId,
+          currentUser.fullname,
+          contactName
+        );
+        setActualConversationId(convId);
+      }
+
+      // Send the message
       await messagingService.sendMessage(
-        actualConversationId,
+        convId,
         currentUser.id,
         currentUser.fullname,
         content
@@ -270,7 +263,7 @@ export default function ChatDetail() {
               className={`rounded-full p-4 ${
                 (messageInput.trim() && !sending) ? 'bg-seljukBlue' : 'bg-millionGrey/20'
               }`}
-              disabled={!messageInput.trim() || sending || !actualConversationId}
+              disabled={!messageInput.trim() || sending || !currentUser}
             >
               {sending ? (
                 <ActivityIndicator size="small" color="#FFFFFF" />
