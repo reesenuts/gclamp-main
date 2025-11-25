@@ -1,5 +1,4 @@
-import * as FileSystem from "expo-file-system";
-import * as Sharing from "expo-sharing";
+import * as FileSystem from "expo-file-system/legacy";
 import { ChatCircle, DownloadSimple, Heart } from "phosphor-react-native";
 import { useState } from "react";
 import { ActivityIndicator, Alert, Image, Pressable, Text, View } from "react-native";
@@ -7,6 +6,7 @@ import API_CONFIG from "../../../config/api";
 import { lampService } from "../../../services";
 import { getErrorMessage } from "../../../utils/errorHandler";
 import { getFileIcon } from "./utils";
+import { FileSystemUnavailableError, getWritableDirectory, saveFileToDevice } from "../../../utils/fileSystem";
 
 type Post = {
   id: string;
@@ -50,32 +50,24 @@ export default function ClassFeedPostCard({
       // Get file extension from filename
       const mimeType = downloadResult.mimeType || 'application/octet-stream';
 
-      // Get cache directory
-      const FileSystemAny = FileSystem as any;
-      const cacheDir = FileSystemAny.cacheDirectory || FileSystemAny.documentDirectory;
-      
-      if (!cacheDir) {
-        Alert.alert(
-          'File System Not Available', 
-          'File system access is not available in your current Expo Go environment.\n\n' +
-          'To use file downloads, please:\n\n' +
-          '• Update Expo Go to the latest version\n' +
-          '• Or build a development/standalone app\n\n' +
-          'You can build a development build with:\n' +
-          'npx expo run:android (or run:ios)'
-        );
-        return;
-      }
-      
-      // Ensure directory exists
+      let cacheDir: string;
       try {
-        const dirInfo = await FileSystem.getInfoAsync(cacheDir);
-        if (!dirInfo.exists) {
-          await FileSystem.makeDirectoryAsync(cacheDir, { intermediates: true });
-        }
+        cacheDir = await getWritableDirectory();
       } catch (dirError) {
-        // Directory might already exist, continue
-        console.log('Directory check:', dirError);
+        if (dirError instanceof FileSystemUnavailableError && dirError.reason === "expo-go") {
+          Alert.alert(
+            'File System Not Available', 
+            'File system access is not available in Expo Go.\n\n' +
+            'To use file downloads, please:\n\n' +
+            '• Update Expo Go to the latest version\n' +
+            '• Or build a development/standalone app\n\n' +
+            'You can build a development build with:\n' +
+            'npx expo run:android (or run:ios)'
+          );
+        } else {
+          Alert.alert('Error', 'Unable to access device storage for downloads.');
+        }
+        return;
       }
       
       // Sanitize filename to avoid path issues
@@ -87,17 +79,8 @@ export default function ClassFeedPostCard({
         encoding: 'base64' as any,
       });
 
-      // Check if sharing is available
-      const isAvailable = await Sharing.isAvailableAsync();
-      if (isAvailable) {
-        // Share/open the file
-        await Sharing.shareAsync(fileUri, {
-          mimeType,
-          dialogTitle: `Open ${attachment.name}`,
-        });
-      } else {
-        Alert.alert('Success', `File downloaded to: ${fileUri}`);
-      }
+      // Save file and show options to user
+      await saveFileToDevice(fileUri, attachment.name, mimeType);
     } catch (err: any) {
       console.error('Error downloading file:', err);
       Alert.alert('Error', getErrorMessage(err) || 'Failed to download file');

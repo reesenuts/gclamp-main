@@ -1,12 +1,12 @@
-import * as FileSystem from "expo-file-system";
+import * as FileSystem from "expo-file-system/legacy";
 import { useFocusEffect } from "expo-router";
-import * as Sharing from "expo-sharing";
 import { CaretDown, DownloadSimple, FileDoc, FilePdf, FileText, FolderOpen, FolderSimple } from "phosphor-react-native";
 import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, ScrollView, Text, View } from "react-native";
 import { authService, generalService, lampService } from "../../services";
 import { SettingsResponse } from "../../types/api";
 import { getErrorMessage } from "../../utils/errorHandler";
+import { FileSystemUnavailableError, getWritableDirectory, saveFileToDevice } from "../../utils/fileSystem";
 
 type Resource = {
   id: string;
@@ -266,33 +266,24 @@ export default function ClassResources({ courseCode, classcode }: ClassResources
       // Get file extension from filename
       const mimeType = downloadResult.mimeType || 'application/octet-stream';
 
-      // Get cache directory - access FileSystem constants
-      const FileSystemAny = FileSystem as any;
-      const cacheDir = FileSystemAny.cacheDirectory || FileSystemAny.documentDirectory;
-      
-      if (!cacheDir) {
-        // File system directories are not available
-        Alert.alert(
-          'File System Not Available', 
-          'File system access is not available in your current Expo Go environment.\n\n' +
-          'To use file downloads, please:\n\n' +
-          '• Update Expo Go to the latest version\n' +
-          '• Or build a development/standalone app\n\n' +
-          'You can build a development build with:\n' +
-          'npx expo run:android (or run:ios)'
-        );
-        return;
-      }
-      
-      // Ensure directory exists
+      let cacheDir: string;
       try {
-        const dirInfo = await FileSystem.getInfoAsync(cacheDir);
-        if (!dirInfo.exists) {
-          await FileSystem.makeDirectoryAsync(cacheDir, { intermediates: true });
-        }
+        cacheDir = await getWritableDirectory();
       } catch (dirError) {
-        // Directory might already exist, continue
-        console.log('Directory check:', dirError);
+        if (dirError instanceof FileSystemUnavailableError && dirError.reason === "expo-go") {
+          Alert.alert(
+            'File System Not Available', 
+            'File system access is not available in Expo Go.\n\n' +
+            'To use file downloads, please:\n\n' +
+            '• Update Expo Go to the latest version\n' +
+            '• Or build a development/standalone app\n\n' +
+            'You can build a development build with:\n' +
+            'npx expo run:android (or run:ios)'
+          );
+        } else {
+          Alert.alert('Error', 'Unable to access device storage for downloads.');
+        }
+        return;
       }
       
       // Sanitize filename to avoid path issues
@@ -304,17 +295,8 @@ export default function ClassResources({ courseCode, classcode }: ClassResources
         encoding: 'base64' as any,
       });
 
-      // Check if sharing is available
-      const isAvailable = await Sharing.isAvailableAsync();
-      if (isAvailable) {
-        // Share/open the file
-        await Sharing.shareAsync(fileUri, {
-          mimeType,
-          dialogTitle: `Open ${resource.name}`,
-        });
-      } else {
-        Alert.alert('Success', `File downloaded to: ${fileUri}`);
-      }
+      // Save file and show options to user
+      await saveFileToDevice(fileUri, resource.name, mimeType);
     } catch (err: any) {
       console.error('Error downloading file:', err);
       Alert.alert('Error', getErrorMessage(err) || 'Failed to download file');
