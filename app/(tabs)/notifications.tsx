@@ -1,240 +1,39 @@
-import { router } from "expo-router";
-import { Books, ChatCircle, FolderSimple, Heart, Newspaper } from "phosphor-react-native";
-import { useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { router, useFocusEffect } from "expo-router";
+import { Books, FolderSimple, Newspaper } from "phosphor-react-native";
+import { useCallback } from "react";
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
+import { useNotifications } from "../hooks/useNotifications";
+import { Notification } from "../services/notification.service";
 
-type NotificationType = 'activity' | 'resource' | 'post' | 'like' | 'comment' | 'reply';
+// Format timestamp to relative time
+const formatTimestamp = (dateString: string): string => {
+  if (!dateString) return 'Just now';
+  
+  try {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
 
-type Notification = {
-  id: string;
-  type: NotificationType;
-  title: string;
-  message: string;
-  author: string;
-  courseCode?: string;
-  courseName?: string;
-  timestamp: string;
-  isRead: boolean;
-  link?: {
-    type: 'activity' | 'resource' | 'feed' | 'class';
-    id?: string;
-    courseCode?: string;
-    postId?: string;
-    commentId?: string;
-    replyId?: string;
-  };
-};
-
-// convert uppercase name to normal case (first name last name format, no comma)
-const toNormalCase = (name: string) => {
-  const parts = name.split(',');
-  if (parts.length === 2) {
-    // reverse order: lastname, firstname -> firstname lastname
-    const firstName = parts[1].trim()
-      .toLowerCase()
-      .split(' ')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-    const lastName = parts[0].trim()
-      .toLowerCase()
-      .split(' ')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-    return `${firstName} ${lastName}`;
+    if (days > 0) {
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    } else if (hours > 0) {
+      return `${hours}h ago`;
+    } else if (minutes > 0) {
+      return `${minutes}m ago`;
+    } else {
+      return 'Just now';
+    }
+  } catch {
+    return dateString;
   }
-  // fallback for names without comma
-  return name
-    .toLowerCase()
-    .split(' ')
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
 };
 
-// get initials from name
-const getInitials = (name: string) => {
-  return name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
-};
-
-// notifications data - based on real data from codebase
-const notificationsData: Notification[] = [
-  // activity notifications
-  {
-    id: '1',
-    type: 'activity',
-    title: 'New Activity Posted',
-    message: 'Chapter 3 Draft Submission has been posted',
-    author: 'Erlinda Abarintos',
-    courseCode: 'CSP421A',
-    courseName: 'CS Thesis Writing 2 (LEC)',
-    timestamp: '2 hours ago',
-    isRead: false,
-    link: { type: 'activity', id: '1', courseCode: 'CSP421A' },
-  },
-  {
-    id: '2',
-    type: 'activity',
-    title: 'New Activity Posted',
-    message: 'Midterm Quiz has been posted',
-    author: 'Melner Balce',
-    courseCode: 'CSE413A',
-    courseName: 'CS Elective 7 (LEC) - Artificial Intelligence & Machine Learning',
-    timestamp: '5 hours ago',
-    isRead: false,
-    link: { type: 'activity', id: '2', courseCode: 'CSE413A' },
-  },
-  {
-    id: '3',
-    type: 'activity',
-    title: 'New Activity Posted',
-    message: 'AR/VR Fundamentals Assignment has been posted',
-    author: 'Loudel Manaloto',
-    courseCode: 'CSE412A',
-    courseName: 'CS Elective 6 (LEC) - AR/VR Systems',
-    timestamp: '1 day ago',
-    isRead: true,
-    link: { type: 'activity', id: '3', courseCode: 'CSE412A' },
-  },
-  // resource notifications
-  {
-    id: '4',
-    type: 'resource',
-    title: 'New Resource Uploaded',
-    message: 'Week_8_Presentation.pdf has been uploaded',
-    author: 'Erlinda Abarintos',
-    courseCode: 'CSP421A',
-    courseName: 'CS Thesis Writing 2 (LEC)',
-    timestamp: '3 hours ago',
-    isRead: false,
-    link: { type: 'resource', courseCode: 'CSP421A' },
-  },
-  {
-    id: '5',
-    type: 'resource',
-    title: 'New Resource Uploaded',
-    message: 'Research_Methodology_Worksheet.docx has been uploaded',
-    author: 'Melner Balce',
-    courseCode: 'CSE413A',
-    courseName: 'CS Elective 7 (LEC) - Artificial Intelligence & Machine Learning',
-    timestamp: '6 hours ago',
-    isRead: false,
-    link: { type: 'resource', courseCode: 'CSE413A' },
-  },
-  // feed post notifications
-  {
-    id: '6',
-    type: 'post',
-    title: 'New Post in Class Feed',
-    message: "Don't forget to submit your Chapter 3 draft by Friday, 11:59 PM...",
-    author: 'Erlinda Abarintos',
-    courseCode: 'CSP421A',
-    courseName: 'CS Thesis Writing 2 (LEC)',
-    timestamp: '4 hours ago',
-    isRead: false,
-    link: { type: 'feed', courseCode: 'CSP421A', postId: '1' },
-  },
-  {
-    id: '7',
-    type: 'post',
-    title: 'New Post in Class Feed',
-    message: 'New learning materials have been uploaded. Please review the presentation slides...',
-    author: 'Erlinda Abarintos',
-    courseCode: 'CSP421A',
-    courseName: 'CS Thesis Writing 2 (LEC)',
-    timestamp: '1 day ago',
-    isRead: true,
-    link: { type: 'feed', courseCode: 'CSP421A', postId: '2' },
-  },
-  // like/react notifications
-  {
-    id: '8',
-    type: 'like',
-    title: 'Reacted to Your Post',
-    message: 'Alberto, Sean Rad reacted to your post',
-    author: 'ALBERTO, SEAN RAD',
-    courseCode: 'CSP421A',
-    courseName: 'CS Thesis Writing 2 (LEC)',
-    timestamp: '30 minutes ago',
-    isRead: false,
-    link: { type: 'feed', courseCode: 'CSP421A', postId: '3' },
-  },
-  {
-    id: '9',
-    type: 'like',
-    title: 'Reacted to Your Comment',
-    message: 'Apo, Eunille Jan reacted to your comment',
-    author: 'APO, EUNILLE JAN',
-    courseCode: 'CSE412A',
-    courseName: 'CS Elective 6 (LEC) - AR/VR Systems',
-    timestamp: '2 hours ago',
-    isRead: false,
-    link: { type: 'feed', courseCode: 'CSE412A', postId: '3', commentId: '3-1' },
-  },
-  // comment notifications
-  {
-    id: '10',
-    type: 'comment',
-    title: 'Commented on Post',
-    message: 'Thank you for the reminder, Ma\'am!',
-    author: 'AGUILAR, ZALDY',
-    courseCode: 'CSP421A',
-    courseName: 'CS Thesis Writing 2 (LEC)',
-    timestamp: '1 hour ago',
-    isRead: false,
-    link: { type: 'feed', courseCode: 'CSP421A', postId: '1', commentId: '1-1' },
-  },
-  {
-    id: '11',
-    type: 'comment',
-    title: 'Commented on Post',
-    message: 'I\'ve started some research. Let\'s meet this weekend!',
-    author: 'BANLUTA, CHRISTIAN DAVE',
-    courseCode: 'CSP421A',
-    courseName: 'CS Thesis Writing 2 (LEC)',
-    timestamp: '3 hours ago',
-    isRead: true,
-    link: { type: 'feed', courseCode: 'CSP421A', postId: '3', commentId: '3-1' },
-  },
-  {
-    id: '12',
-    type: 'comment',
-    title: 'Commented on Your Post',
-    message: 'Great work on the midterm exams! The average score was 85%...',
-    author: 'Erlinda Abarintos',
-    courseCode: 'CSP421A',
-    courseName: 'CS Thesis Writing 2 (LEC)',
-    timestamp: '1 day ago',
-    isRead: true,
-    link: { type: 'feed', courseCode: 'CSP421A', postId: '4', commentId: '4-1' },
-  },
-  // reply notifications
-  {
-    id: '13',
-    type: 'reply',
-    title: 'Replied to Your Comment',
-    message: 'I\'ll check the lab computers and get back to you.',
-    author: 'BELEN, KENT HAROLD',
-    courseCode: 'CSE412A',
-    courseName: 'CS Elective 6 (LEC) - AR/VR Systems',
-    timestamp: '45 minutes ago',
-    isRead: false,
-    link: { type: 'feed', courseCode: 'CSE412A', postId: '3', commentId: '3-1', replyId: '3-1-reply-1' },
-  },
-  {
-    id: '14',
-    type: 'reply',
-    title: 'Replied to Your Comment',
-    message: 'Will definitely visit this week.',
-    author: 'BENEDICTO, BERNARD ADRIANNE',
-    courseCode: 'CSP421A',
-    courseName: 'CS Thesis Writing 2 (LEC)',
-    timestamp: '5 hours ago',
-    isRead: false,
-    link: { type: 'feed', courseCode: 'CSP421A', postId: '1', commentId: '1-1', replyId: '1-1-reply-1' },
-  },
-];
-
-// get icon for notification type
-const getNotificationIcon = (type: NotificationType) => {
+// Get icon for notification type
+const getNotificationIcon = (type: Notification['type']) => {
   switch (type) {
     case 'activity':
       return Books;
@@ -242,19 +41,13 @@ const getNotificationIcon = (type: NotificationType) => {
       return FolderSimple;
     case 'post':
       return Newspaper;
-    case 'like':
-      return Heart;
-    case 'comment':
-      return ChatCircle;
-    case 'reply':
-      return ChatCircle;
     default:
-      return FolderSimple;
+      return Newspaper;
   }
 };
 
-// get icon color for notification type
-const getNotificationIconColor = (type: NotificationType) => {
+// Get icon color for notification type
+const getNotificationIconColor = (type: Notification['type']) => {
   switch (type) {
     case 'activity':
       return '#4285F4';
@@ -262,264 +55,205 @@ const getNotificationIconColor = (type: NotificationType) => {
       return '#10B981';
     case 'post':
       return '#3B82F6';
-    case 'like':
-      return '#EC4899';
-    case 'comment':
-      return '#8B5CF6';
-    case 'reply':
-      return '#8B5CF6';
     default:
       return '#999999';
   }
 };
 
 export default function Notifications() {
-  const [notifications, setNotifications] = useState<Notification[]>(notificationsData);
+  const {
+    notifications,
+    unreadCount,
+    loading,
+    refreshing,
+    refresh,
+    markAsRead,
+    markAllAsRead,
+  } = useNotifications();
 
-  // handle notification click
-  const handleNotificationClick = (notification: Notification) => {
-    // mark as read
-    setNotifications(notifications.map(n => 
-      n.id === notification.id ? { ...n, isRead: true } : n
-    ));
+  // Refresh on focus (but debounce to avoid conflicts with markAsRead)
+  useFocusEffect(
+    useCallback(() => {
+      // Small delay to avoid race conditions with markAsRead
+      const timeoutId = setTimeout(() => {
+        refresh();
+      }, 300);
+      return () => clearTimeout(timeoutId);
+    }, [refresh])
+  );
 
-    // navigate based on notification type and link
-    if (notification.link) {
-      const { type, courseCode, id } = notification.link;
-      
-      // activity notifications -> go directly to activity detail
-      if (notification.type === 'activity' && type === 'activity' && id) {
-        router.push({
-          pathname: '/components/classes/activities/activity-detail' as any,
-          params: {
-            activityId: id,
-            title: notification.message,
-            description: notification.message,
-            dueDate: '',
-            points: '0',
-            status: 'not_started',
-            courseCode: courseCode || '',
-            courseName: notification.courseName || '',
-          }
-        });
-        return;
-      }
-      
-      // resource notifications -> go to resources tab
-      if (notification.type === 'resource' && type === 'resource') {
-        router.push({
-          pathname: '/components/classes/class-details' as any,
-          params: {
-            code: courseCode || '',
-            name: notification.courseName || '',
-            instructor: notification.author,
-            schedule: '',
-            time: '',
-            room: '',
-            color: '#3b82f6',
-            initialTab: 'resources',
-          }
-        });
-        return;
-      }
-      
-      // post, comment, reply, like notifications -> go to feed tab
-      if (notification.type === 'post' || notification.type === 'comment' || 
-          notification.type === 'reply' || notification.type === 'like') {
-        router.push({
-          pathname: '/components/classes/class-details' as any,
-          params: {
-            code: courseCode || '',
-            name: notification.courseName || '',
-            instructor: notification.author,
-            schedule: '',
-            time: '',
-            room: '',
-            color: '#3b82f6',
-            initialTab: 'feed',
-            highlightPostId: notification.link.postId || '',
-            highlightCommentId: notification.link.commentId || '',
-            highlightReplyId: notification.link.replyId || '',
-          }
-        });
-        return;
-      }
-      
-      // fallback: navigate to class details
-      if (type === 'class') {
-        router.push({
-          pathname: '/components/classes/class-details' as any,
-          params: {
-            code: courseCode || '',
-            name: notification.courseName || '',
-            instructor: notification.author,
-            schedule: '',
-            time: '',
-            room: '',
-            color: '#3b82f6',
-          }
-        });
-      } else if (type === 'feed') {
-        router.push({
-          pathname: '/components/classes/class-details' as any,
-          params: {
-            code: courseCode || '',
-            name: notification.courseName || '',
-            instructor: notification.author,
-            schedule: '',
-            time: '',
-            room: '',
-            color: '#3b82f6',
-            initialTab: 'feed',
-            highlightPostId: notification.link.postId || '',
-            highlightCommentId: notification.link.commentId || '',
-            highlightReplyId: notification.link.replyId || '',
-          }
-        });
-      } else if (type === 'activity' && id) {
-        router.push({
-          pathname: '/components/classes/activities/activity-detail' as any,
-          params: {
-            activityId: id,
-            title: notification.message,
-            description: notification.message,
-            dueDate: '',
-            points: '0',
-            status: 'not_started',
-            courseCode: courseCode || '',
-            courseName: notification.courseName || '',
-          }
-        });
-      } else if (type === 'resource') {
-        router.push({
-          pathname: '/components/classes/class-details' as any,
-          params: {
-            code: courseCode || '',
-            name: notification.courseName || '',
-            instructor: notification.author,
-            schedule: '',
-            time: '',
-            room: '',
-            color: '#3b82f6',
-            initialTab: 'resources',
-          }
-        });
-      }
+  // Handle notification click
+  const handleNotificationClick = async (notification: Notification) => {
+    // Mark as read
+    if (notification.is_read === 0) {
+      await markAsRead(notification.id);
+    }
+
+    // Navigate based on notification type
+    const { type, classcode_fld, post_id, activity_id, resource_id, subjcode_fld, subjdesc_fld } = notification;
+
+    switch (type) {
+      case 'post':
+        if (post_id && classcode_fld) {
+          router.push({
+            pathname: '/components/classes/class-details' as any,
+            params: {
+              code: subjcode_fld || '',
+              classcode: classcode_fld,
+              name: subjdesc_fld || '',
+              instructor: '',
+              schedule: '',
+              time: '',
+              room: '',
+              color: '#3b82f6',
+              initialTab: 'feed',
+              highlightPostId: post_id.toString(),
+            },
+          });
+        }
+        break;
+
+      case 'activity':
+        if (activity_id && classcode_fld) {
+          router.push({
+            pathname: '/components/classes/activities/activity-detail' as any,
+            params: {
+              activityId: activity_id.toString(),
+              classcode: classcode_fld,
+              courseCode: subjcode_fld || '',
+              courseName: subjdesc_fld || '',
+            },
+          });
+        }
+        break;
+
+      case 'resource':
+        if (classcode_fld) {
+          router.push({
+            pathname: '/components/classes/class-details' as any,
+            params: {
+              code: subjcode_fld || '',
+              classcode: classcode_fld,
+              name: subjdesc_fld || '',
+              instructor: '',
+              schedule: '',
+              time: '',
+              room: '',
+              color: '#3b82f6',
+              initialTab: 'resources',
+            },
+          });
+        }
+        break;
     }
   };
 
-  // unread count
-  const unreadCount = notifications.filter(n => !n.isRead).length;
-
-  // group notifications by time
+  // Group notifications by read status and time
   const groupNotifications = () => {
-    // new = all unread notifications
-    const newNotifications = notifications.filter(n => !n.isRead);
-    
-    // today = read notifications from today (minutes/hours ago)
-    const todayNotifications = notifications.filter(n => {
-      if (!n.isRead) return false; // only read notifications
-      const timestamp = n.timestamp.toLowerCase();
-      return timestamp.includes('minutes ago') || timestamp.includes('hour ago') || timestamp.includes('hours ago');
+    const unread = notifications.filter((n) => n.is_read === 0);
+    const read = notifications.filter((n) => n.is_read === 1);
+
+    // Group read notifications by time
+    // Today = notifications from today (minutes/hours ago, or same day)
+    const today = read.filter((n) => {
+      const timestamp = formatTimestamp(n.created_at).toLowerCase();
+      return timestamp.includes('m ago') || timestamp.includes('h ago') || timestamp === 'just now';
     });
-    
-    // earlier = read notifications from earlier (days/weeks ago)
-    const earlierNotifications = notifications.filter(n => {
-      if (!n.isRead) return false; // only read notifications
-      const timestamp = n.timestamp.toLowerCase();
-      return timestamp.includes('day ago') || timestamp.includes('days ago') || timestamp.includes('week ago') || timestamp.includes('weeks ago');
+
+    // Earlier = all other read notifications (days ago or date strings)
+    const earlier = read.filter((n) => {
+      const timestamp = formatTimestamp(n.created_at).toLowerCase();
+      return !timestamp.includes('m ago') && 
+             !timestamp.includes('h ago') && 
+             timestamp !== 'just now';
     });
 
     return {
-      new: newNotifications,
-      today: todayNotifications,
-      earlier: earlierNotifications,
+      new: unread,
+      today,
+      earlier,
     };
   };
 
   const groupedNotifications = groupNotifications();
 
-  // format simplified notification message
-  const formatNotificationMessage = (notification: Notification): string => {
-    const isInstructor = !notification.author.includes(',');
-    const authorName = isInstructor ? notification.author : toNormalCase(notification.author);
-    
-    switch (notification.type) {
-      case 'activity':
-        return notification.message;
-      
-      case 'resource':
-        return notification.message;
-      
-      case 'post':
-        return notification.message;
-      
-      case 'like':
-        if (notification.message.includes('reacted to your post')) {
-          return `${authorName} reacted to your post`;
-        } else if (notification.message.includes('reacted to your comment')) {
-          return `${authorName} reacted to your comment`;
-        }
-        return notification.message;
-      
-      case 'comment':
-        if (notification.title.includes('Your Post')) {
-          return `${authorName} commented on your post`;
-        } else {
-          return `${authorName} commented: ${notification.message}`;
-        }
-      
-      case 'reply':
-        return `${authorName} replied to your comment`;
-      
-      default:
-        return notification.message;
-    }
-  };
-
-  // render notification item
+  // Render notification item
   const renderNotificationItem = (notification: Notification) => {
     const Icon = getNotificationIcon(notification.type);
     const iconColor = getNotificationIconColor(notification.type);
-    const formattedMessage = formatNotificationMessage(notification);
+    const isUnread = notification.is_read === 0;
 
     return (
-      <Pressable key={notification.id} onPress={() => handleNotificationClick(notification)} className={`flex-row items-start py-3 px-6 border-crystalBell active:opacity-80 ${ !notification.isRead ? 'bg-seljukBlue/5' : '' }`} >
-        {/* icon */}
-        <View className="w-10 h-10 rounded-full items-center justify-center mr-3" style={{ backgroundColor: `${iconColor}15` }} >
+      <Pressable
+        key={notification.id}
+        onPress={() => handleNotificationClick(notification)}
+        className={`flex-row items-start py-3 px-6 border-b border-crystalBell active:opacity-80 ${
+          isUnread ? 'bg-seljukBlue/5' : ''
+        }`}
+      >
+        {/* Icon */}
+        <View
+          className="w-10 h-10 rounded-full items-center justify-center mr-3"
+          style={{ backgroundColor: `${iconColor}15` }}
+        >
           <Icon size={20} color={iconColor} weight="fill" />
         </View>
-        
-        {/* content */}
+
+        {/* Content */}
         <View className="flex-1 mr-3">
           <View className="flex-row items-center">
             <Text className="text-twilightZone font-semibold text-base flex-1">
-              {notification.courseName || 'Notification'}
-          </Text>
-            {!notification.isRead && (
+              {notification.subjdesc_fld || notification.title}
+            </Text>
+            {isUnread && (
               <View className="w-2 h-2 rounded-full bg-seljukBlue ml-2" />
             )}
           </View>
           <Text className="text-millionGrey text-sm mb-1" numberOfLines={3}>
-            {formattedMessage}
+            {notification.message}
           </Text>
-          <View className="flex-row items-center flex-wrap">
-            <Text className="text-millionGrey text-xs">
-              {notification.timestamp}
+          <Text className="text-millionGrey text-xs">
+            {formatTimestamp(notification.created_at)}
           </Text>
         </View>
-      </View>
       </Pressable>
     );
   };
 
+  if (loading && notifications.length === 0) {
+    return (
+      <View className="flex-1 items-center justify-center">
+        <ActivityIndicator size="large" color="#4285F4" />
+        <Text className="text-millionGrey mt-4">Loading notifications...</Text>
+      </View>
+    );
+  }
+
   return (
     <View className="flex-1 bg-white">
-      {/* notifications list */}
+      {/* Mark all as read button */}
+      {unreadCount > 0 && (
+        <Pressable
+          onPress={markAllAsRead}
+          className="px-6 py-3 bg-white border-b border-crystalBell active:opacity-80"
+        >
+          <Text className="text-seljukBlue font-semibold text-base text-center">
+            Mark all as read ({unreadCount})
+          </Text>
+        </Pressable>
+      )}
+
+      {/* Notifications list */}
       {notifications.length > 0 ? (
-        <ScrollView className="flex-1 mb-2" showsVerticalScrollIndicator={false}>
+        <ScrollView
+          className="flex-1"
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={refresh} />
+          }
+        >
           <View className="pb-6">
-            {/* new section */}
+            {/* New section */}
             {groupedNotifications.new.length > 0 && (
               <>
                 <View className="px-6 py-2">
@@ -529,7 +263,7 @@ export default function Notifications() {
               </>
             )}
 
-            {/* today section */}
+            {/* Today section */}
             {groupedNotifications.today.length > 0 && (
               <>
                 <View className="px-6 py-2">
@@ -539,7 +273,7 @@ export default function Notifications() {
               </>
             )}
 
-            {/* earlier section */}
+            {/* Earlier section */}
             {groupedNotifications.earlier.length > 0 && (
               <>
                 <View className="px-6 py-2">
@@ -553,6 +287,7 @@ export default function Notifications() {
       ) : (
         <View className="flex-1 items-center justify-center">
           <Text className="text-millionGrey text-base">No notifications</Text>
+          <Text className="text-millionGrey text-sm mt-2">You're all caught up!</Text>
         </View>
       )}
     </View>

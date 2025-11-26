@@ -3,6 +3,7 @@ import { At, LockSimple } from "phosphor-react-native";
 import { useState } from "react";
 import { ActivityIndicator, Image, Pressable, SafeAreaView, Text, TextInput, View } from "react-native";
 import { authService } from "./services";
+import { setupFCM } from "./utils/fcmSetup";
 
 export default function Login() {
   const [username, setUsername] = useState("");
@@ -29,6 +30,11 @@ export default function Login() {
         username: username.trim(),
         password,
         device: "mobile",
+      });
+
+      // Setup FCM after successful login
+      setupFCM().catch((error) => {
+        console.error('Failed to setup FCM after login:', error);
       });
 
       // Success - navigate to app

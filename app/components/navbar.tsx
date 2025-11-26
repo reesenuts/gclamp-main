@@ -2,6 +2,7 @@ import { usePathname, useRouter } from "expo-router";
 import { Bell, Books, CalendarBlank, ChalkboardSimple, ChatTeardrop } from "phosphor-react-native";
 import React, { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
+import { useNotifications } from "../hooks/useNotifications";
 
 type Routes = | "/todolist" | "/classes" | "/schedule" | "/notifications" | "/messages";
 
@@ -15,32 +16,18 @@ const tabs: TabItem[] = [
   { name: "Messages", icon: ChatTeardrop, route: "/messages" },
 ];
 
-// get badge counts - using real data from codebase
-const getBadgeCounts = () => {
-  // unread notifications count (from notifications.tsx data)
-  // counting notifications with isRead: false (ids: 1, 2, 4, 5, 6, 8, 9, 10, 13, 14)
-  const unreadNotifications = 10;
-
-  // new messages count (messages with recent timestamps like "3:16 PM", "4:15 PM" are considered new)
-  // messages from today (3:16 PM, 4:15 PM)
-  const newMessages = 2;
-
-  // new activities in todo (activities posted recently - within last 24-48 hours)
-  // activities with postedDate like "Nov 28, 2025, 2:30 PM" (recent)
-  const newActivities = 1;
-
-  return {
-    notifications: unreadNotifications,
-    messages: newMessages,
-    todo: newActivities,
-  };
-};
-
 export default function BottomNav() {
   const router = useRouter();
   const pathname = usePathname();
   const [active, setActive] = useState<TabItem["name"]>("To-Do");
-  const badgeCounts = getBadgeCounts();
+  const { unreadCount: unreadNotifications } = useNotifications();
+
+  // TODO: Get real counts for messages and todo when those features are implemented
+  const badgeCounts = {
+    notifications: unreadNotifications,
+    messages: 0, // Will be implemented when message notifications are added
+    todo: 0, // Will be implemented when todo notifications are added
+  };
 
   useEffect(() => {
     const currentTab = tabs.find((tab) => pathname === tab.route);

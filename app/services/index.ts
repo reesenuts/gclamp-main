@@ -9,5 +9,6 @@ export { getFirestoreInstance, initializeFirebase, isFirebaseConfigured } from '
 export { generalService } from './general.service';
 export { lampService } from './lamp.service';
 export * as messagingService from './messaging.service';
+export { notificationService } from './notification.service';
 export { studentService } from './student.service';
 
