@@ -1,7 +1,7 @@
 import { router, useFocusEffect } from "expo-router";
 import { MagnifyingGlass, Plus } from "phosphor-react-native";
 import { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActionSheetIOS, ActivityIndicator, Alert, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { authService, initializeFirebase, isFirebaseConfigured, messagingService } from "../services";
 import { Conversation } from "../services/messaging.service";
 import { getErrorMessage } from "../utils/errorHandler";
@@ -62,6 +62,7 @@ export default function Messages() {
   const [error, setError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<MessageListItem[]>([]);
   const [currentUser, setCurrentUser] = useState<{ id: string; fullname: string } | null>(null);
+  const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
 
   // Initialize Firebase and get current user
   useEffect(() => {
@@ -157,6 +158,8 @@ export default function Messages() {
 
   // handle message click - navigate to chat detail
   const handleMessageClick = (message: MessageListItem) => {
+    if (deletingConversationId) return;
+
     router.push({
       pathname: '/components/chat-detail' as any,
       params: {
@@ -166,6 +169,50 @@ export default function Messages() {
         role: message.role,
       }
     });
+  };
+
+  const handleDeleteConversation = async (conversationId: string) => {
+    try {
+      setDeletingConversationId(conversationId);
+      await messagingService.deleteConversation(conversationId);
+    } catch (err: any) {
+      console.error('Error deleting conversation:', err);
+      Alert.alert('Error', getErrorMessage(err) || 'Failed to delete conversation');
+    } finally {
+      setDeletingConversationId(null);
+    }
+  };
+
+  const handleConversationLongPress = (conversation: MessageListItem) => {
+    if (deletingConversationId) return;
+
+    const confirmDelete = () => handleDeleteConversation(conversation.conversationId);
+
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ['Delete Conversation', 'Cancel'],
+          destructiveButtonIndex: 0,
+          cancelButtonIndex: 1,
+          title: conversation.name,
+          message: 'This will remove all messages with this contact.',
+        },
+        (buttonIndex) => {
+          if (buttonIndex === 0) {
+            confirmDelete();
+          }
+        }
+      );
+    } else {
+      Alert.alert(
+        'Delete conversation',
+        `Remove your conversation with ${conversation.name}?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Delete', style: 'destructive', onPress: confirmDelete },
+        ]
+      );
+    }
   };
 
   if (loading) {
@@ -215,11 +262,16 @@ export default function Messages() {
       {/* messages list */}
       {filteredMessages.length > 0 ? (
         <ScrollView showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false} >
-          {filteredMessages.map((msg) => (
+          {filteredMessages.map((msg) => {
+            const isDeleting = deletingConversationId === msg.conversationId;
+            return (
             <Pressable
               key={msg.id}
-              className="flex-row items-center py-4 border-b border-crystalBell active:opacity-80"
+              className="flex-row items-center py-4 border-b border-crystalBell"
               onPress={() => handleMessageClick(msg)}
+              onLongPress={() => handleConversationLongPress(msg)}
+              disabled={isDeleting}
+              style={{ opacity: isDeleting ? 0.6 : 1 }}
             >
               {/* avatar with initials */}
               <View className="w-12 h-12 rounded-full bg-millionGrey/10 border border-crystalBell items-center justify-center mr-4">
@@ -235,9 +287,13 @@ export default function Messages() {
                   {msg.lastMessage}
                 </Text>
               </View>
-              <Text className="text-millionGrey text-xs ml-3">{msg.time}</Text>
+              {isDeleting ? (
+                <ActivityIndicator size="small" color="#999999" style={{ marginLeft: 12 }} />
+              ) : (
+                <Text className="text-millionGrey text-xs ml-3">{msg.time}</Text>
+              )}
             </Pressable>
-          ))}
+          )})}
         </ScrollView>
        ) : (
          <View className="flex-1 items-center justify-center">

@@ -6,8 +6,10 @@
 import {
     addDoc,
     collection,
+    deleteDoc,
     doc,
     getDocs,
+    limit,
     onSnapshot,
     orderBy,
     query,
@@ -27,6 +29,7 @@ export type Message = {
   timestamp: Date;
   isRead: boolean;
   type: 'text' | 'image' | 'file';
+  editedAt?: Date;
 };
 
 export type Conversation = {
@@ -124,6 +127,101 @@ export const sendMessage = async (
 };
 
 /**
+ * Recalculate the last message metadata for a conversation
+ */
+export const refreshConversationMetadata = async (conversationId: string): Promise<void> => {
+  const db = getFirestoreInstance();
+  const messagesRef = collection(db, FIRESTORE_COLLECTIONS.MESSAGES);
+
+  const latestMessageQuery = query(
+    messagesRef,
+    where('conversationId', '==', conversationId),
+    orderBy('timestamp', 'desc'),
+    limit(1)
+  );
+
+  const latestSnapshot = await getDocs(latestMessageQuery);
+  const conversationRef = doc(db, FIRESTORE_COLLECTIONS.CONVERSATIONS, conversationId);
+
+  if (latestSnapshot.empty) {
+    await updateDoc(conversationRef, {
+      lastMessage: '',
+      lastMessageSender: '',
+      lastMessageTime: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    return;
+  }
+
+  const latestData = latestSnapshot.docs[0].data();
+
+  await updateDoc(conversationRef, {
+    lastMessage: latestData.content || '',
+    lastMessageSender: latestData.senderId || '',
+    lastMessageTime: latestData.timestamp || serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+};
+
+/**
+ * Update an existing message
+ */
+export const updateMessage = async (
+  conversationId: string,
+  messageId: string,
+  content: string
+): Promise<void> => {
+  const db = getFirestoreInstance();
+  const messageRef = doc(db, FIRESTORE_COLLECTIONS.MESSAGES, messageId);
+
+  await updateDoc(messageRef, {
+    content,
+    editedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  await refreshConversationMetadata(conversationId);
+};
+
+/**
+ * Delete a message
+ */
+export const deleteMessage = async (
+  conversationId: string,
+  messageId: string
+): Promise<void> => {
+  const db = getFirestoreInstance();
+  const messageRef = doc(db, FIRESTORE_COLLECTIONS.MESSAGES, messageId);
+
+  await deleteDoc(messageRef);
+  await refreshConversationMetadata(conversationId);
+};
+
+/**
+ * Delete an entire conversation and its messages
+ */
+export const deleteConversation = async (
+  conversationId: string
+): Promise<void> => {
+  const db = getFirestoreInstance();
+  const conversationRef = doc(db, FIRESTORE_COLLECTIONS.CONVERSATIONS, conversationId);
+  const messagesRef = collection(db, FIRESTORE_COLLECTIONS.MESSAGES);
+
+  const messagesQuery = query(
+    messagesRef,
+    where('conversationId', '==', conversationId)
+  );
+
+  const messagesSnapshot = await getDocs(messagesQuery);
+  const deletePromises = messagesSnapshot.docs.map((docSnapshot) =>
+    deleteDoc(docSnapshot.ref)
+  );
+
+  await Promise.all(deletePromises);
+  await deleteDoc(conversationRef);
+};
+
+/**
  * Get messages for a conversation (real-time listener)
  */
 export const subscribeToMessages = (
@@ -151,6 +249,7 @@ export const subscribeToMessages = (
         timestamp: data.timestamp?.toDate() || new Date(),
         isRead: data.isRead || false,
         type: data.type || 'text',
+        editedAt: data.editedAt?.toDate(),
       };
     });
     callback(messages);

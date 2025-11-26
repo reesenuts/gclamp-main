@@ -105,7 +105,10 @@ export default function ContactPicker() {
       for (const classItem of classes) {
         const classcode = classItem.classcode_fld || classItem.recno_fld?.toString() || '';
         const className = classItem.subjdesc_fld || classItem.name_fld || 'Unknown Class';
-        const instructor = classItem.instructor_fld || classItem.instructor || '';
+        const instructorNameRaw = classItem.faculty_fld || classItem.instructor_fld || classItem.instructor || '';
+        const instructorName = instructorNameRaw ? instructorNameRaw.trim() : '';
+        const instructorEmailFromClass = classItem.email_fld || classItem.instructor_email_fld || '';
+        const instructorIdFromClass = classItem.empcode_fld?.toString() || instructorEmailFromClass;
 
         if (!classcode) continue;
 
@@ -138,8 +141,9 @@ export default function ContactPicker() {
               if (!studentId || studentId === user.id) return;
 
               // Determine role
-              const isInstructor = email === instructor || 
-                                fullName === instructor ||
+              const matchesInstructorName = Boolean(instructorName && fullName === instructorName);
+              const matchesInstructorEmail = Boolean(instructorEmailFromClass && email === instructorEmailFromClass);
+              const isInstructor = matchesInstructorName || matchesInstructorEmail ||
                                 (email.includes('@gordoncollege.edu.ph') && 
                                 (apiStudent.role_fld === 'instructor' || apiStudent.empcode_fld));
 
@@ -157,26 +161,25 @@ export default function ContactPicker() {
               }
             });
 
-            // Add instructor if not already in list
-            if (instructor) {
-              // Generate instructor email (consistent format)
-              const instructorEmail = instructor.includes('@') 
-                ? instructor 
-                : `${instructor.toLowerCase().replace(/\s+/g, '.')}@gordoncollege.edu.ph`;
-              
-              // Use email as ID for instructors (for consistency with messaging)
-              // Check if instructor already exists by email
-              if (!contactIds.has(instructorEmail)) {
-                contactIds.add(instructorEmail);
-                allContacts.push({
-                  id: instructorEmail, // Use email as ID for instructors
-                  name: instructor,
-                  email: instructorEmail,
-                  role: 'instructor',
-                  classcode,
-                  className,
-                });
-              }
+          }
+
+          // Add instructor if not already in list
+          if (instructorName) {
+            const normalizedName = instructorName.trim();
+            const instructorEmail = instructorEmailFromClass ||
+              `${normalizedName.toLowerCase().replace(/\s+/g, '.')}@gordoncollege.edu.ph`;
+            const instructorId = instructorIdFromClass || instructorEmail;
+
+            if (instructorId && !contactIds.has(instructorId)) {
+              contactIds.add(instructorId);
+              allContacts.push({
+                id: instructorId,
+                name: normalizedName,
+                email: instructorEmail,
+                role: 'instructor',
+                classcode,
+                className,
+              });
             }
           }
         } catch (err: any) {

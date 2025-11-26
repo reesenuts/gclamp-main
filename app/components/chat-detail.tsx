@@ -1,7 +1,7 @@
 import { router, useLocalSearchParams } from "expo-router";
 import { CaretLeft, PaperPlaneTilt } from "phosphor-react-native";
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ActionSheetIOS, ActivityIndicator, Alert, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { authService, messagingService } from "../services";
 import { Message } from "../services/messaging.service";
@@ -12,6 +12,7 @@ type ChatMessage = {
   content: string;
   timestamp: string;
   isFromUser: boolean;
+  isEdited: boolean;
 };
 
 // get initials from name
@@ -51,6 +52,7 @@ export default function ChatDetail() {
   const [currentUser, setCurrentUser] = useState<{ id: string; fullname: string } | null>(null);
   const [actualConversationId, setActualConversationId] = useState<string | null>(conversationId || null);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [editingMessage, setEditingMessage] = useState<{ id: string; originalContent: string } | null>(null);
   const scrollViewRef = useRef<ScrollView>(null);
 
   // Get current user
@@ -101,6 +103,7 @@ export default function ChatDetail() {
               hour12: true 
             }),
             isFromUser,
+            isEdited: Boolean(msg.editedAt),
           };
         });
 
@@ -150,11 +153,36 @@ export default function ChatDetail() {
     };
   }, [isIOS]);
 
-  // Send message
+  const resetComposer = () => {
+    setMessageInput('');
+    setEditingMessage(null);
+  };
+
+  // Send or edit message
   const handleSendMessage = async () => {
     if (!messageInput.trim() || !currentUser || sending) return;
 
     const content = messageInput.trim();
+
+    if (editingMessage && actualConversationId) {
+      setSending(true);
+      try {
+        await messagingService.updateMessage(
+          actualConversationId,
+          editingMessage.id,
+          content
+        );
+        resetComposer();
+      } catch (err: any) {
+        console.error('Error updating message:', err);
+        Alert.alert('Error', getErrorMessage(err) || 'Failed to update message');
+        setMessageInput(content);
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
+
     setMessageInput('');
     setSending(true);
 
@@ -184,6 +212,74 @@ export default function ChatDetail() {
       setMessageInput(content); // Restore message on error
     } finally {
       setSending(false);
+    }
+  };
+
+  const confirmDeleteMessage = (messageId: string) => {
+    Alert.alert(
+      'Delete message',
+      'Are you sure you want to delete this message?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => handleDeleteMessage(messageId),
+        },
+      ]
+    );
+  };
+
+  const handleDeleteMessage = async (messageId: string) => {
+    if (!actualConversationId) return;
+
+    try {
+      await messagingService.deleteMessage(actualConversationId, messageId);
+      if (editingMessage?.id === messageId) {
+        resetComposer();
+      }
+    } catch (err: any) {
+      console.error('Error deleting message:', err);
+      Alert.alert('Error', getErrorMessage(err) || 'Failed to delete message');
+    }
+  };
+
+  const handleEditMessage = (message: ChatMessage) => {
+    setEditingMessage({ id: message.id, originalContent: message.content });
+    setMessageInput(message.content);
+  };
+
+  const handleMessageLongPress = (message: ChatMessage) => {
+    if (!message.isFromUser || !actualConversationId) return;
+
+    const handleSelection = (index: number) => {
+      if (index === 0) {
+        handleEditMessage(message);
+      } else if (index === 1) {
+        confirmDeleteMessage(message.id);
+      }
+    };
+
+    if (isIOS) {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ['Edit', 'Delete', 'Cancel'],
+          destructiveButtonIndex: 1,
+          cancelButtonIndex: 2,
+          title: 'Message options',
+        },
+        handleSelection
+      );
+    } else {
+      Alert.alert(
+        'Message options',
+        undefined,
+        [
+          { text: 'Edit', onPress: () => handleSelection(0) },
+          { text: 'Delete', style: 'destructive', onPress: () => handleSelection(1) },
+          { text: 'Cancel', style: 'cancel' },
+        ]
+      );
     }
   };
 
@@ -238,9 +334,11 @@ export default function ChatDetail() {
               </View>
             ) : (
               messages.map((message) => (
-                <View
+                <Pressable
                   key={message.id}
                   className={`mb-4 ${message.isFromUser ? 'items-end' : 'items-start'}`}
+                  onLongPress={() => handleMessageLongPress(message)}
+                  disabled={!message.isFromUser}
                 >
                   <View
                     className={`max-w-[80%] rounded-2xl p-4 ${
@@ -256,15 +354,26 @@ export default function ChatDetail() {
                     >
                       {message.content}
                     </Text>
-                    <Text
-                      className={`text-xs mt-2 ${
-                        message.isFromUser ? 'text-white/70' : 'text-millionGrey'
-                      }`}
-                    >
-                      {message.timestamp}
-                    </Text>
+                    <View className="flex-row items-center mt-2">
+                      <Text
+                        className={`text-xs ${
+                          message.isFromUser ? 'text-white/70' : 'text-millionGrey'
+                        }`}
+                      >
+                        {message.timestamp}
+                      </Text>
+                      {message.isEdited && (
+                        <Text
+                          className={`text-xs ml-1 ${
+                            message.isFromUser ? 'text-white/70' : 'text-millionGrey'
+                          }`}
+                        >
+                          · Edited
+                        </Text>
+                      )}
+                    </View>
                   </View>
-                </View>
+                </Pressable>
               ))
             )}
           </ScrollView>
@@ -278,6 +387,16 @@ export default function ChatDetail() {
             marginBottom: isIOS ? 0 : keyboardHeight
           }}
         >
+          {editingMessage && (
+            <View className="px-4 pt-3 pb-1 flex-row items-center justify-between">
+              <Text className="text-millionGrey text-sm">
+                Editing message
+              </Text>
+              <Pressable onPress={resetComposer} hitSlop={8}>
+                <Text className="text-seljukBlue text-sm font-semibold">Cancel</Text>
+              </Pressable>
+            </View>
+          )}
           <View className="px-4 py-3 flex-row items-end">
             <View className="flex-1 border border-crystalBell rounded-full mr-3">
               <TextInput
