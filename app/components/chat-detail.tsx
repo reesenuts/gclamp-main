@@ -1,8 +1,8 @@
 import { router, useLocalSearchParams } from "expo-router";
 import { CaretLeft, PaperPlaneTilt } from "phosphor-react-native";
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { ActivityIndicator, Alert, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { authService, messagingService } from "../services";
 import { Message } from "../services/messaging.service";
 import { getErrorMessage } from "../utils/errorHandler";
@@ -35,6 +35,8 @@ const toNormalCase = (name: string) => {
 
 export default function ChatDetail() {
   const params = useLocalSearchParams();
+  const insets = useSafeAreaInsets();
+  const isIOS = Platform.OS === 'ios';
   
   const conversationId = params.conversationId as string;
   const otherUserId = params.otherUserId as string;
@@ -48,6 +50,7 @@ export default function ChatDetail() {
   const [sending, setSending] = useState(false);
   const [currentUser, setCurrentUser] = useState<{ id: string; fullname: string } | null>(null);
   const [actualConversationId, setActualConversationId] = useState<string | null>(conversationId || null);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const scrollViewRef = useRef<ScrollView>(null);
 
   // Get current user
@@ -121,6 +124,32 @@ export default function ChatDetail() {
     }, 100);
   }, [messages]);
 
+  // Handle keyboard visibility to adjust spacing & auto-scroll
+  useEffect(() => {
+    const showEvent = isIOS ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = isIOS ? 'keyboardWillHide' : 'keyboardDidHide';
+
+    const keyboardWillShow = Keyboard.addListener(showEvent, (event) => {
+      if (!isIOS && event.endCoordinates?.height) {
+        setKeyboardHeight(event.endCoordinates.height);
+      }
+      setTimeout(() => {
+        scrollViewRef.current?.scrollToEnd({ animated: true });
+      }, 100);
+    });
+
+    const keyboardWillHide = Keyboard.addListener(hideEvent, () => {
+      if (!isIOS) {
+        setKeyboardHeight(0);
+      }
+    });
+
+    return () => {
+      keyboardWillShow.remove();
+      keyboardWillHide.remove();
+    };
+  }, [isIOS]);
+
   // Send message
   const handleSendMessage = async () => {
     if (!messageInput.trim() || !currentUser || sending) return;
@@ -159,12 +188,12 @@ export default function ChatDetail() {
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-white" edges={['top']}>
-      <KeyboardAvoidingView
-        className="flex-1"
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
-      >
+    <KeyboardAvoidingView
+      className="flex-1 bg-white"
+      behavior={isIOS ? 'padding' : undefined}
+      keyboardVerticalOffset={isIOS ? insets.top : 0}
+    >
+      <SafeAreaView className="flex-1 bg-white" edges={['top']}>
         {/* header */}
         <View className="px-4 pt-4 pb-4 bg-white border-b border-crystalBell">
           <View className="flex-row items-center">
@@ -200,6 +229,7 @@ export default function ChatDetail() {
             className="flex-1"
             showsVerticalScrollIndicator={false}
             contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
+            keyboardShouldPersistTaps="handled"
           >
             {messages.length === 0 ? (
               <View className="flex-1 items-center justify-center py-20">
@@ -241,7 +271,13 @@ export default function ChatDetail() {
         )}
 
         {/* message input */}
-        <SafeAreaView edges={['bottom']} className="bg-white border-t border-crystalBell">
+        <View 
+          className="bg-white border-t border-crystalBell"
+          style={{ 
+            paddingBottom: insets.bottom,
+            marginBottom: isIOS ? 0 : keyboardHeight
+          }}
+        >
           <View className="px-4 py-3 flex-row items-end">
             <View className="flex-1 border border-crystalBell rounded-full mr-3">
               <TextInput
@@ -276,9 +312,9 @@ export default function ChatDetail() {
               )}
             </Pressable>
           </View>
-        </SafeAreaView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+        </View>
+      </SafeAreaView>
+    </KeyboardAvoidingView>
   );
 }
 
