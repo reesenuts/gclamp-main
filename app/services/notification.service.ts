@@ -92,6 +92,25 @@ class NotificationService {
       p_platform: platform,
     });
   }
+
+  /**
+   * Delete a single notification
+   */
+  async deleteNotification(studno: string, notificationId: number): Promise<void> {
+    await apiClient.request('deletenotification', {
+      p_studno: studno,
+      p_notification_id: notificationId,
+    });
+  }
+
+  /**
+   * Delete all notifications for a student
+   */
+  async deleteAllNotifications(studno: string): Promise<void> {
+    await apiClient.request('deleteallnotifications', {
+      p_studno: studno,
+    });
+  }
 }
 
 export const notificationService = new NotificationService();

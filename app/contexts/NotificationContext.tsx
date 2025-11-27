@@ -11,6 +11,8 @@ type NotificationContextValue = {
   refresh: () => Promise<void>;
   markAsRead: (notificationId: number) => Promise<void>;
   markAllAsRead: () => Promise<void>;
+  deleteNotification: (notificationId: number) => Promise<void>;
+  deleteAllNotifications: () => Promise<void>;
   refetch: () => Promise<void>;
 };
 
@@ -115,6 +117,41 @@ export const NotificationProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [currentUserId]);
 
+  const deleteNotification = useCallback(
+    async (notificationId: number) => {
+      if (!currentUserId) return;
+      try {
+        // Optimistically remove from UI
+        setNotifications((prev) => {
+          const filtered = prev.filter((n) => n.id !== notificationId);
+          const unread = filtered.filter((n) => n.is_read === 0).length;
+          setUnreadCount(unread);
+          return filtered;
+        });
+        await notificationService.deleteNotification(currentUserId, notificationId);
+      } catch (error) {
+        console.error('Error deleting notification:', error);
+        // Revert on error by refetching
+        fetchNotifications();
+      }
+    },
+    [currentUserId, fetchNotifications]
+  );
+
+  const deleteAllNotifications = useCallback(async () => {
+    if (!currentUserId) return;
+    try {
+      // Optimistically clear UI
+      setNotifications([]);
+      setUnreadCount(0);
+      await notificationService.deleteAllNotifications(currentUserId);
+    } catch (error) {
+      console.error('Error deleting all notifications:', error);
+      // Revert on error by refetching
+      fetchNotifications();
+    }
+  }, [currentUserId, fetchNotifications]);
+
   useEffect(() => {
     if (currentUserId) {
       fetchNotifications();
@@ -139,9 +176,11 @@ export const NotificationProvider = ({ children }: { children: ReactNode }) => {
       refresh,
       markAsRead,
       markAllAsRead,
+      deleteNotification,
+      deleteAllNotifications,
       refetch: fetchNotifications,
     }),
-    [notifications, unreadCount, loading, refreshing, refresh, markAsRead, markAllAsRead, fetchNotifications]
+    [notifications, unreadCount, loading, refreshing, refresh, markAsRead, markAllAsRead, deleteNotification, deleteAllNotifications, fetchNotifications]
   );
 
   return <NotificationContext.Provider value={value}>{children}</NotificationContext.Provider>;

@@ -1,7 +1,7 @@
 import { router, useFocusEffect } from "expo-router";
-import { Books, FolderSimple, Newspaper } from "phosphor-react-native";
+import { Books, FolderSimple, Newspaper, Trash } from "phosphor-react-native";
 import { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
+import { ActionSheetIOS, ActivityIndicator, Alert, Platform, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useNotifications } from "../hooks/useNotifications";
 import { Notification } from "../services/notification.service";
 import { authService, generalService, lampService } from "../services";
@@ -115,6 +115,8 @@ export default function Notifications() {
     refresh,
     markAsRead,
     markAllAsRead,
+    deleteNotification,
+    deleteAllNotifications,
   } = useNotifications();
   const [classInfoMap, setClassInfoMap] = useState<Record<string, ClassInfo>>({});
   const [loadingClasses, setLoadingClasses] = useState(true);
@@ -191,6 +193,70 @@ export default function Notifications() {
       return () => clearTimeout(timeoutId);
     }, [refresh])
   );
+
+  // Handle notification long press (for delete option)
+  const handleNotificationLongPress = (notification: Notification) => {
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ['Cancel', 'Delete'],
+          destructiveButtonIndex: 1,
+          cancelButtonIndex: 0,
+        },
+        (buttonIndex) => {
+          if (buttonIndex === 1) {
+            handleDeleteNotification(notification);
+          }
+        }
+      );
+    } else {
+      Alert.alert(
+        'Delete Notification',
+        'Are you sure you want to delete this notification?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: () => handleDeleteNotification(notification),
+          },
+        ]
+      );
+    }
+  };
+
+  // Handle delete notification
+  const handleDeleteNotification = async (notification: Notification) => {
+    try {
+      await deleteNotification(notification.id);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to delete notification. Please try again.');
+    }
+  };
+
+  // Handle clear all notifications
+  const handleClearAll = () => {
+    if (notifications.length === 0) return;
+
+    Alert.alert(
+      'Clear All Notifications',
+      `Are you sure you want to delete all ${notifications.length} notification${notifications.length > 1 ? 's' : ''}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear All',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteAllNotifications();
+            } catch (error) {
+              Alert.alert('Error', 'Failed to clear all notifications. Please try again.');
+            }
+          },
+        },
+      ]
+    );
+  };
 
   // Handle notification click
   const handleNotificationClick = async (notification: Notification) => {
@@ -300,6 +366,7 @@ export default function Notifications() {
       <Pressable
         key={notification.id}
         onPress={() => handleNotificationClick(notification)}
+        onLongPress={() => handleNotificationLongPress(notification)}
         className={`flex-row items-start py-3 px-6 border-b border-crystalBell active:opacity-80 ${
           isUnread ? 'bg-seljukBlue/5' : ''
         }`}
@@ -353,16 +420,33 @@ export default function Notifications() {
 
   return (
     <View className="flex-1 bg-white">
-      {/* Mark all as read button */}
-      {unreadCount > 0 && (
-        <Pressable
-          onPress={markAllAsRead}
-          className="px-6 py-3 bg-white border-b border-crystalBell active:opacity-80"
-        >
-          <Text className="text-seljukBlue font-semibold text-base text-center">
-            Mark all as read ({unreadCount})
-          </Text>
-        </Pressable>
+      {/* Action buttons */}
+      {(unreadCount > 0 || notifications.length > 0) && (
+        <View className="flex-row bg-white border-b border-crystalBell">
+          {unreadCount > 0 && (
+            <Pressable
+              onPress={markAllAsRead}
+              className="flex-1 px-6 py-3 active:opacity-80"
+            >
+              <Text className="text-seljukBlue font-semibold text-base text-center">
+                Mark all as read ({unreadCount})
+              </Text>
+            </Pressable>
+          )}
+          {notifications.length > 0 && (
+            <Pressable
+              onPress={handleClearAll}
+              className={`px-6 py-3 active:opacity-80 ${unreadCount > 0 ? 'border-l border-crystalBell' : 'flex-1'}`}
+            >
+              <View className="flex-row items-center justify-center">
+                <Trash size={16} color="#dc2626" weight="regular" />
+                <Text className="text-red-600 font-semibold text-base ml-2">
+                  Clear All
+                </Text>
+              </View>
+            </Pressable>
+          )}
+        </View>
       )}
 
       {/* Notifications list */}
