@@ -1,6 +1,6 @@
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import { authService, generalService, lampService } from "../services";
 import { SettingsResponse, StudentClass, TodoListItem } from "../types/api";
 import { getErrorMessage } from "../utils/errorHandler";
@@ -49,6 +49,7 @@ export default function ToDoList() {
   // API data states
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
   // Course mapping for colors (will be populated from classes)
@@ -181,9 +182,13 @@ export default function ToDoList() {
   };
 
   // Fetch todo list data (wrapped in useCallback for useFocusEffect)
-  const fetchTodoList = useCallback(async () => {
+  const fetchTodoList = useCallback(async (isRefresh: boolean = false) => {
     try {
-      setLoading(true);
+      if (isRefresh) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
       setError(null);
 
       // Step 1: Get current user (student ID)
@@ -335,7 +340,11 @@ export default function ToDoList() {
         setError(getErrorMessage(err));
       }
     } finally {
-      setLoading(false);
+      if (isRefresh) {
+        setRefreshing(false);
+      } else {
+        setLoading(false);
+      }
     }
   }, []);
 
@@ -350,6 +359,11 @@ export default function ToDoList() {
       fetchTodoList();
     }, [fetchTodoList])
   );
+
+  // Handle pull-to-refresh
+  const handleRefresh = useCallback(async () => {
+    await fetchTodoList(true);
+  }, [fetchTodoList]);
 
   // handle todo click - navigate to activity detail
   const handleTodoClick = (todo: TodoItem) => {
@@ -441,7 +455,13 @@ export default function ToDoList() {
       </View>
 
       {/* todo list */}
-      <ScrollView className="flex-1 mb-2" showsVerticalScrollIndicator={false}>
+      <ScrollView 
+        className="flex-1 mb-2" 
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+        }
+      >
         <View className="p-6">
           {/* Loading state */}
           {loading && (
@@ -456,7 +476,7 @@ export default function ToDoList() {
             <View className="items-center justify-center py-20">
               <Text className="text-red-600 text-base mb-2">{error}</Text>
               <Pressable
-                onPress={fetchTodoList}
+                onPress={() => fetchTodoList()}
                 className="bg-metalDeluxe rounded-full px-6 py-3 mt-4"
               >
                 <Text className="text-white text-base">Retry</Text>
