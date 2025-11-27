@@ -9,8 +9,9 @@
 import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
-import { notificationService } from '../services/notification.service';
 import { authService } from '../services';
+import { notificationService } from '../services/notification.service';
+import { emitNotificationUpdate } from './notificationEvents';
 
 // Check if running in Expo Go
 // In Expo Go, appOwnership is 'expo', in development builds it's 'standalone' or null
@@ -37,8 +38,12 @@ export const setupFCM = async (): Promise<void> => {
         shouldShowAlert: true,
         shouldPlaySound: true,
         shouldSetBadge: true,
+        shouldShowBanner: true,
+        shouldShowList: true,
       }),
     });
+
+    emitNotificationUpdate();
 
     // Get current user
     const user = await authService.getCurrentUser();
@@ -61,19 +66,17 @@ export const setupFCM = async (): Promise<void> => {
       return;
     }
 
-    // Get device token
-    const tokenData = await Notifications.getExpoPushTokenAsync({
-      projectId: 'gclamp-mobile', // Your Firebase project ID
-    });
+    // Get FCM device token
+    const devicePushToken = await Notifications.getDevicePushTokenAsync();
+    const deviceToken = devicePushToken?.data;
 
-    const deviceToken = tokenData.data;
+    if (!deviceToken) {
+      console.warn('Unable to obtain device push token. Skipping registration.');
+      return;
+    }
 
-    // Register device with backend
-    await notificationService.registerDevice(
-      user.id,
-      deviceToken,
-      Platform.OS
-    );
+    // Register device with backend (expects FCM token)
+    await notificationService.registerDevice(user.id, deviceToken, Platform.OS);
 
     console.log('Device registered for push notifications:', deviceToken);
 
@@ -106,12 +109,13 @@ const setupNotificationListeners = () => {
   // Foreground notifications
   Notifications.addNotificationReceivedListener((notification) => {
     console.log('Foreground notification received:', notification);
-    // You can show an in-app alert or update UI here
+    // Trigger refresh for any listeners (badge, notifications tab, etc.)
+    emitNotificationUpdate();
   });
 
   // Notification tapped (app opened from notification)
   Notifications.addNotificationResponseReceivedListener((response) => {
-    console.log('Notification tapped:', response);
+      console.log('Notification tapped:', response);
     const data = response.notification.request.content.data;
     
     // Handle navigation based on notification data
@@ -120,6 +124,8 @@ const setupNotificationListeners = () => {
       // Navigate to appropriate screen
       // Navigation logic will be handled in the app router
     }
+
+    emitNotificationUpdate();
   });
 };
 

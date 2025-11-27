@@ -104,7 +104,7 @@ export default function ActivityDetail() {
     description: params.description as string,
     dueDate: params.dueDate as string,
     points: parseInt(params.points as string) || 0,
-    status: params.status as string,
+    status: (params.status as string) || 'not_started',
     grade: params.grade ? parseInt(params.grade as string) : undefined,
     submittedDate: params.submittedDate as string || undefined,
     postedDate: params.postedDate as string || undefined,
@@ -190,6 +190,8 @@ export default function ActivityDetail() {
           p_classcode: classcode,
         });
 
+        let matchedActivityData: any = null;
+
         if (activitiesResponse.status.rem === 'success' && activitiesResponse.data) {
           const activities = Array.isArray(activitiesResponse.data) ? activitiesResponse.data : [];
           const matchedActivity = activities.find((act: any) => 
@@ -198,86 +200,15 @@ export default function ActivityDetail() {
           );
 
           if (matchedActivity) {
-            // Fetch submission to get submission date and files
-            // Status is already determined from the list, but we need submission data for display
-            const user = await authService.getCurrentUser();
-            let submissionDate: string | undefined = undefined;
-            
-            if (user) {
-              try {
-                const submissionResponse = await lampService.getSubmission({
-                  p_id: user.id,
-                  p_classcode: classcode,
-                  p_actcode: activity.id,
-                });
-
-                if (submissionResponse.status.rem === 'success' && submissionResponse.data) {
-                  const submission = Array.isArray(submissionResponse.data) 
-                    ? submissionResponse.data[0] 
-                    : submissionResponse.data;
-                  
-                  if (submission) {
-                    // Get full formatted date (with time)
-                    submissionDate = submission.datetime_fld ? formatDateFromAPI(submission.datetime_fld) : undefined;
-                  }
-                }
-              } catch (submissionErr) {
-                // If submission fetch fails, keep existing status from params
-                console.log('Could not fetch submission:', submissionErr);
-              }
-            }
-
-            // Use status from params (already determined correctly in the list)
-            // We still fetch submission to get the submission date and files for display
-            // Status is already accurate from the activities list, so we trust it
-
-            setActivity({
-              id: matchedActivity.actcode_fld?.toString() || matchedActivity.recno_fld?.toString() || activity.id,
-              title: matchedActivity.title_fld || activity.title,
-              description: matchedActivity.desc_fld || activity.description,
-              dueDate: formatDateFromAPI(matchedActivity.deadline_fld || ''),
-              points: matchedActivity.totalscore_fld || activity.points,
-              status: activity.status, // Use status from params (already determined correctly in the list)
-              grade: matchedActivity.isscored_fld === 1 ? matchedActivity.score_fld : undefined,
-              submittedDate: submissionDate || undefined,
-              postedDate: formatDateFromAPI(matchedActivity.datetime_fld || ''),
-              courseCode: activity.courseCode,
-              courseName: activity.courseName,
-            });
-
-            // Extract instructor files from activity
-            if (matchedActivity.filedir_fld) {
-              const files: InstructorFile[] = [];
-              // Handle single file or multiple files
-              // File paths can be in format: "filename?path/to/file" or just "path/to/file"
-              const filePaths = Array.isArray(matchedActivity.filedir_fld) 
-                ? matchedActivity.filedir_fld 
-                : [matchedActivity.filedir_fld];
-              
-              filePaths.forEach((filePath: string) => {
-                if (filePath) {
-                  // Handle filepath format: "filename?path/to/file" or just "path/to/file"
-                  const [filename, path] = filePath.includes('?') 
-                    ? filePath.split('?') 
-                    : [filePath.split('/').pop() || filePath, filePath];
-                  
-                  files.push({
-                    id: filename,
-                    name: filename,
-                    type: getFileType(filename),
-                    size: 'Unknown', // API doesn't provide size
-                    postedDate: formatDateFromAPI(matchedActivity.datetime_fld || ''),
-                    filepath: path || filePath, // Use the path part or full filePath
-                  });
-                }
-              });
-              setInstructorFiles(files);
-            }
+            matchedActivityData = matchedActivity;
           }
         }
 
-        // Fetch student submission files
+        // Fetch submission to determine status and get submission data
         const user = await authService.getCurrentUser();
+        let submissionData: any = null;
+        let submissionDate: string | undefined = undefined;
+        
         if (user) {
           try {
             const submissionResponse = await lampService.getSubmission({
@@ -287,40 +218,120 @@ export default function ActivityDetail() {
             });
 
             if (submissionResponse.status.rem === 'success' && submissionResponse.data) {
-              const submission = Array.isArray(submissionResponse.data) 
+              submissionData = Array.isArray(submissionResponse.data) 
                 ? submissionResponse.data[0] 
                 : submissionResponse.data;
               
-              // Submission table uses dir_fld (not filedir_fld)
-              if (submission?.dir_fld) {
-                // Handle file path format: "filename1?path1:filename2?path2" or single path
-                const filePathString = submission.dir_fld;
-                // Split by ':' to get individual files (if multiple)
-                const fileEntries = filePathString.includes(':') 
-                  ? filePathString.split(':')
-                  : [filePathString];
-                
-                const files: Attachment[] = fileEntries.map((fileEntry: string, index: number) => {
-                  // Parse "filename?path" format
-                  const [filename, path] = fileEntry.includes('?') 
-                    ? fileEntry.split('?')
-                    : [fileEntry.split('/').pop() || `file_${index + 1}`, fileEntry];
-                  
-                  return {
-                    id: `submitted_${index}_${filename}`,
-                    name: filename,
-                    size: 'Unknown',
-                    uri: '', // Not needed for already submitted files
-                    mimeType: '', // Not needed for already submitted files
-                  };
-                });
-                setAttachments(files);
+              if (submissionData) {
+                // Get full formatted date (with time)
+                submissionDate = submissionData.datetime_fld ? formatDateFromAPI(submissionData.datetime_fld) : undefined;
               }
             }
-          } catch (err) {
-            // No submission found - that's okay
-            console.log('No submission found');
+          } catch (submissionErr) {
+            // If submission fetch fails, submissionData will remain null
+            console.log('Could not fetch submission:', submissionErr);
           }
+        }
+
+        // Calculate status based on submission and deadline
+        let calculatedStatus = 'not_started';
+        if (matchedActivityData) {
+          const hasSubmission = !!submissionData;
+          
+          if (hasSubmission) {
+            // Check if submitted late
+            if (matchedActivityData.deadline_fld && submissionData.datetime_fld) {
+              const deadline = new Date(matchedActivityData.deadline_fld);
+              const submitted = new Date(submissionData.datetime_fld);
+              calculatedStatus = submitted > deadline ? 'late' : 'done';
+            } else {
+              calculatedStatus = 'done';
+            }
+          } else if (matchedActivityData.deadline_fld) {
+            // No submission - check if deadline has passed
+            const deadline = new Date(matchedActivityData.deadline_fld);
+            const now = new Date();
+            if (now > deadline) {
+              calculatedStatus = 'missing';
+            }
+          }
+        }
+
+        // Update activity state with fetched data and calculated status
+        if (matchedActivityData) {
+          setActivity(prev => ({
+            ...prev,
+            id: matchedActivityData.actcode_fld?.toString() || matchedActivityData.recno_fld?.toString() || prev.id,
+            title: matchedActivityData.title_fld || prev.title,
+            description: matchedActivityData.desc_fld || prev.description,
+            dueDate: formatDateFromAPI(matchedActivityData.deadline_fld || '') || prev.dueDate,
+            points: matchedActivityData.totalscore_fld ?? prev.points,
+            status: calculatedStatus, // Use calculated status instead of preserving old one
+            grade: matchedActivityData.isscored_fld === 1 ? matchedActivityData.score_fld : prev.grade,
+            submittedDate: submissionDate || prev.submittedDate,
+            postedDate: formatDateFromAPI(matchedActivityData.datetime_fld || '') || prev.postedDate,
+            courseCode: prev.courseCode,
+            courseName: prev.courseName,
+          }));
+
+          // Extract instructor files from activity
+          if (matchedActivityData?.filedir_fld) {
+            const files: InstructorFile[] = [];
+            // Handle single file or multiple files
+            // File paths can be in format: "filename?path/to/file" or just "path/to/file"
+            const filePaths = Array.isArray(matchedActivityData.filedir_fld) 
+              ? matchedActivityData.filedir_fld 
+              : [matchedActivityData.filedir_fld];
+            
+            filePaths.forEach((filePath: string) => {
+              if (filePath) {
+                // Handle filepath format: "filename?path/to/file" or just "path/to/file"
+                const [filename, path] = filePath.includes('?') 
+                  ? filePath.split('?') 
+                  : [filePath.split('/').pop() || filePath, filePath];
+                
+                files.push({
+                  id: filename,
+                  name: filename,
+                  type: getFileType(filename),
+                  size: 'Unknown', // API doesn't provide size
+                  postedDate: formatDateFromAPI(matchedActivityData.datetime_fld || ''),
+                  filepath: path || filePath, // Use the path part or full filePath
+                });
+              }
+            });
+            setInstructorFiles(files);
+          }
+        }
+
+        // Use already-fetched submission data to set attachment files
+        if (submissionData?.dir_fld) {
+          // Submission table uses dir_fld (not filedir_fld)
+          // Handle file path format: "filename1?path1:filename2?path2" or single path
+          const filePathString = submissionData.dir_fld;
+          // Split by ':' to get individual files (if multiple)
+          const fileEntries = filePathString.includes(':') 
+            ? filePathString.split(':')
+            : [filePathString];
+          
+          const files: Attachment[] = fileEntries.map((fileEntry: string, index: number) => {
+            // Parse "filename?path" format
+            const [filename, path] = fileEntry.includes('?') 
+              ? fileEntry.split('?')
+              : [fileEntry.split('/').pop() || `file_${index + 1}`, fileEntry];
+            
+            return {
+              id: `submitted_${index}_${filename}`,
+              name: filename,
+              size: 'Unknown',
+              uri: '', // Not needed for already submitted files
+              mimeType: '', // Not needed for already submitted files
+            };
+          });
+          setAttachments(files);
+        } else {
+          // No submission files - clear attachments if this is a fresh load
+          setAttachments([]);
         }
 
         // Fetch comments
@@ -539,55 +550,44 @@ export default function ActivityDetail() {
         }
 
         // Update status based on submission
-        if (hasSubmission) {
-          // Get deadline from matchedActivity if available, otherwise use current activity state
-          let deadline: Date | null = null;
+        const determineDeadline = (): Date | null => {
           if (matchedActivityData?.deadline_fld) {
-            deadline = new Date(matchedActivityData.deadline_fld);
-          } else if (activity.dueDate) {
-            // Try to parse the formatted date string back to Date
-            try {
-              deadline = new Date(activity.dueDate);
-            } catch (e) {
-              // If parsing fails, deadline remains null
-            }
+            const dl = new Date(matchedActivityData.deadline_fld);
+            return isNaN(dl.getTime()) ? null : dl;
           }
-          
-          let status = 'done'; // Default to done if submitted
-          
+          if (activity.dueDate) {
+            const dl = new Date(activity.dueDate);
+            return isNaN(dl.getTime()) ? null : dl;
+          }
+          return null;
+        };
+
+        const deadline = determineDeadline();
+        let computedStatus = 'not_started';
+
+        if (hasSubmission) {
           if (deadline && submissionDate) {
             const submitted = new Date(submissionDate);
-            status = submitted > deadline ? 'late' : 'done';
+            computedStatus = submitted > deadline ? 'late' : 'done';
+          } else {
+            computedStatus = 'done';
           }
 
-          // Update activity with submission status
           setActivity(prev => ({
             ...prev,
-            status,
+            status: computedStatus,
             submittedDate: submissionDate,
           }));
         } else {
-          // No submission - determine status based on deadline
-          let deadline: Date | null = null;
-          if (matchedActivityData?.deadline_fld) {
-            deadline = new Date(matchedActivityData.deadline_fld);
-          } else if (activity.dueDate) {
-            try {
-              deadline = new Date(activity.dueDate);
-            } catch (e) {
-              // If parsing fails, deadline remains null
-            }
-          }
-          
           const now = new Date();
-          let status = 'not_started';
           if (deadline && now > deadline) {
-            status = 'missing';
+            computedStatus = 'missing';
           }
-          
+
           setActivity(prev => ({
             ...prev,
-            status,
+            status: computedStatus,
+            submittedDate: undefined,
           }));
         }
       } catch (refreshErr) {
@@ -821,8 +821,10 @@ export default function ActivityDetail() {
   };
 
   // get status badge config
-  const getStatusConfig = (status: string) => {
-    switch (status) {
+  const getStatusConfig = (status: string | undefined | null) => {
+    const normalizedStatus = status || 'not_started';
+
+    switch (normalizedStatus) {
       case 'done':
         return {
           label: 'DONE',
@@ -849,7 +851,7 @@ export default function ActivityDetail() {
         };
       default:
         return {
-          label: status.toUpperCase(),
+          label: normalizedStatus.toUpperCase(),
           bgColor: 'bg-gray-100',
           textColor: 'text-gray-600',
         };

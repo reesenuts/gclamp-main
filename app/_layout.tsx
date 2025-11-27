@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Stack } from "expo-router";
 import "../global.css";
 import { setupFCM } from "./utils/fcmSetup";
+import { NotificationProvider } from "./contexts/NotificationContext";
 
 export default function RootLayout() {
   useEffect(() => {
@@ -11,5 +12,9 @@ export default function RootLayout() {
     });
   }, []);
 
-  return <Stack screenOptions={{ headerShown: false }} />;
+  return (
+    <NotificationProvider>
+      <Stack screenOptions={{ headerShown: false }} />
+    </NotificationProvider>
+  );
 }

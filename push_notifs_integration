@@ -1,0 +1,20 @@
+Push Notifications Integration Guide
+1. Token Type Required
+Backend sends notifications through Firebase Cloud Messaging (FCM) V1.
+It expects real FCM device tokens, not Expo push tokens (ExponentPushToken[...]).
+The client must call an API that returns the FCM token (e.g. @react-native-firebase/messaging().getToken() or the FCM pathway in expo-notifications when running bare/Dev Client) and register that value.
+2. Device Registration Flow
+On login (or app launch after login), request notification permission.
+Fetch the FCM device token.
+POST to registerdevice (existing endpoint) with:
+studno_fld or whatever user identifier the backend uses.
+device_token = FCM token string.
+platform = android | ios.
+Backend stores the token in test_lamp.student_device_tokens, which powers FCM sends.
+3. Receiving Notifications
+Backend inserts notification rows and immediately calls FCM using the stored tokens.
+Ensure the app has a listener that handles incoming pushes (foreground/tapped/background) and calls the existing emitNotificationUpdate() or equivalent badge refresh logic so unread counts update without visiting the notifications tab.
+4. Troubleshooting Checklist
+Table test_lamp.student_device_tokens should contain FCM tokens (long base64-like strings). If you see ExponentPushToken[...], the wrong token type is being sent.
+When a faculty post/activity/resource is created, backend logs should show FCM V1 push results: X successful…. If not, check that the token registration succeeded.
+Badge won’t change unless a push actually arrives; verify device receives the notification (system tray, alert) during testing.
