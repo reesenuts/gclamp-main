@@ -172,9 +172,11 @@ export default function Messages() {
   };
 
   const handleDeleteConversation = async (conversationId: string) => {
+    if (!currentUser) return;
+    
     try {
       setDeletingConversationId(conversationId);
-      await messagingService.deleteConversation(conversationId);
+      await messagingService.deleteConversation(conversationId, currentUser.id);
     } catch (err: any) {
       console.error('Error deleting conversation:', err);
       Alert.alert('Error', getErrorMessage(err) || 'Failed to delete conversation');

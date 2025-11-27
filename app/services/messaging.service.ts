@@ -8,6 +8,7 @@ import {
     collection,
     deleteDoc,
     doc,
+    getDoc,
     getDocs,
     limit,
     onSnapshot,
@@ -42,6 +43,7 @@ export type Conversation = {
   updatedAt: Date;
   // Additional metadata
   participantNames?: { [userId: string]: string }; // Cache participant names
+  deletedBy?: string[]; // Array of user IDs who have deleted this conversation
 };
 
 /**
@@ -66,8 +68,23 @@ export const getOrCreateConversation = async (
   const snapshot = await getDocs(q);
   
   if (!snapshot.empty) {
-    // Conversation exists, return its ID
-    return snapshot.docs[0].id;
+    // Conversation exists, check if it was deleted by either user
+    const conversationDoc = snapshot.docs[0];
+    const conversationData = conversationDoc.data();
+    const deletedBy = conversationData.deletedBy || [];
+    
+    // If the conversation was deleted by either user, restore it by removing them from deletedBy
+    if (deletedBy.includes(userId1) || deletedBy.includes(userId2)) {
+      const updatedDeletedBy = deletedBy.filter(
+        (id: string) => id !== userId1 && id !== userId2
+      );
+      await updateDoc(conversationDoc.ref, {
+        deletedBy: updatedDeletedBy,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    
+    return conversationDoc.id;
   }
 
   // Create new conversation
@@ -198,27 +215,61 @@ export const deleteMessage = async (
 };
 
 /**
- * Delete an entire conversation and its messages
+ * Delete a conversation for a specific user (soft delete)
+ * The conversation and messages remain in the database but are hidden from the user
+ * If all participants delete the conversation, it will be hard deleted
  */
 export const deleteConversation = async (
-  conversationId: string
+  conversationId: string,
+  userId: string
 ): Promise<void> => {
   const db = getFirestoreInstance();
   const conversationRef = doc(db, FIRESTORE_COLLECTIONS.CONVERSATIONS, conversationId);
-  const messagesRef = collection(db, FIRESTORE_COLLECTIONS.MESSAGES);
-
-  const messagesQuery = query(
-    messagesRef,
-    where('conversationId', '==', conversationId)
+  
+  // Get current conversation data
+  const conversationDoc = await getDoc(conversationRef);
+  
+  if (!conversationDoc.exists()) {
+    throw new Error('Conversation not found');
+  }
+  
+  const conversationData = conversationDoc.data();
+  const participants = conversationData.participants || [];
+  const deletedBy = conversationData.deletedBy || [];
+  
+  // Add user to deletedBy array if not already present
+  if (!deletedBy.includes(userId)) {
+    deletedBy.push(userId);
+  }
+  
+  // Check if all participants have deleted the conversation
+  const allParticipantsDeleted = participants.every((participantId: string) => 
+    deletedBy.includes(participantId)
   );
-
-  const messagesSnapshot = await getDocs(messagesQuery);
-  const deletePromises = messagesSnapshot.docs.map((docSnapshot) =>
-    deleteDoc(docSnapshot.ref)
-  );
-
-  await Promise.all(deletePromises);
-  await deleteDoc(conversationRef);
+  
+  if (allParticipantsDeleted) {
+    // Hard delete: Remove conversation and all its messages
+    const messagesRef = collection(db, FIRESTORE_COLLECTIONS.MESSAGES);
+    const messagesQuery = query(
+      messagesRef,
+      where('conversationId', '==', conversationId)
+    );
+    
+    const messagesSnapshot = await getDocs(messagesQuery);
+    const deletePromises = messagesSnapshot.docs.map((docSnapshot) =>
+      deleteDoc(docSnapshot.ref)
+    );
+    
+    // Delete all messages and the conversation
+    await Promise.all(deletePromises);
+    await deleteDoc(conversationRef);
+  } else {
+    // Soft delete: Just update the deletedBy array
+    await updateDoc(conversationRef, {
+      deletedBy,
+      updatedAt: serverTimestamp(),
+    });
+  }
 };
 
 /**
@@ -273,19 +324,23 @@ export const subscribeToConversations = (
   );
 
   return onSnapshot(q, (snapshot) => {
-    const conversations: Conversation[] = snapshot.docs.map((doc) => {
-      const data = doc.data();
-      return {
-        id: doc.id,
-        participants: data.participants || [],
-        lastMessage: data.lastMessage || '',
-        lastMessageTime: data.lastMessageTime?.toDate() || new Date(),
-        lastMessageSender: data.lastMessageSender || '',
-        createdAt: data.createdAt?.toDate() || new Date(),
-        updatedAt: data.updatedAt?.toDate() || new Date(),
-        participantNames: data.participantNames || {},
-      };
-    });
+    const conversations: Conversation[] = snapshot.docs
+      .map((doc) => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          participants: data.participants || [],
+          lastMessage: data.lastMessage || '',
+          lastMessageTime: data.lastMessageTime?.toDate() || new Date(),
+          lastMessageSender: data.lastMessageSender || '',
+          createdAt: data.createdAt?.toDate() || new Date(),
+          updatedAt: data.updatedAt?.toDate() || new Date(),
+          participantNames: data.participantNames || {},
+          deletedBy: data.deletedBy || [],
+        };
+      })
+      // Filter out conversations deleted by the current user
+      .filter((conv) => !conv.deletedBy || !conv.deletedBy.includes(userId));
     callback(conversations);
   });
 };
