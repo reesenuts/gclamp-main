@@ -1,9 +1,55 @@
 import { router, useFocusEffect } from "expo-router";
 import { Books, FolderSimple, Newspaper } from "phosphor-react-native";
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useNotifications } from "../hooks/useNotifications";
 import { Notification } from "../services/notification.service";
+import { authService, generalService, lampService } from "../services";
+import { SettingsResponse, StudentClass } from "../types/api";
+
+type ClassInfo = {
+  code: string;
+  name: string;
+  instructor: string;
+  schedule: string;
+  time: string;
+  room: string;
+};
+
+const formatDaySchedule = (dayFld: string): string => {
+  if (!dayFld) return '';
+  const dayMap: Record<string, string> = {
+    Mon: 'M',
+    Tue: 'T',
+    Wed: 'W',
+    Thu: 'Th',
+    Fri: 'F',
+    Sat: 'Sat',
+    Sun: 'Sun',
+  };
+  return dayFld
+    .split(',')
+    .map((day) => dayMap[day.trim()] || day.trim())
+    .join('');
+};
+
+const formatTimeRange = (start?: string, end?: string): string => {
+  if (!start && !end) return '';
+  if (!start) return end || '';
+  if (!end) return start;
+  return `${start} - ${end}`;
+};
+
+const transformClassToInfo = (cls: StudentClass, _index: number): ClassInfo => {
+  return {
+    code: cls.subjcode_fld || '',
+    name: cls.subjdesc_fld || '',
+    instructor: cls.faculty_fld?.trim() || '',
+    schedule: formatDaySchedule(cls.day_fld || ''),
+    time: formatTimeRange(cls.starttime_fld, cls.endtime_fld),
+    room: cls.room_fld || '',
+  };
+};
 
 // Format timestamp to relative time
 const formatTimestamp = (dateString: string): string => {
@@ -70,6 +116,70 @@ export default function Notifications() {
     markAsRead,
     markAllAsRead,
   } = useNotifications();
+  const [classInfoMap, setClassInfoMap] = useState<Record<string, ClassInfo>>({});
+  const [loadingClasses, setLoadingClasses] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    const fetchClassInfo = async () => {
+      try {
+        setLoadingClasses(true);
+        const user = await authService.getCurrentUser();
+        if (!user) {
+          return;
+        }
+
+        const settingsResponse = await generalService.getSettings();
+        if (settingsResponse.status.rem !== 'success' || !settingsResponse.data) {
+          return;
+        }
+
+        const settings = settingsResponse.data as SettingsResponse;
+        const academicYear = settings.setting?.acadyear_fld || '';
+        const semester = settings.setting?.sem_fld || '';
+
+        if (!academicYear || !semester) {
+          return;
+        }
+
+        const classesResponse = await lampService.getStudentClasses({
+          p_id: user.id,
+          p_ay: academicYear,
+          p_sem: String(semester),
+        });
+
+        if (classesResponse.status.rem !== 'success' || !classesResponse.data) {
+          return;
+        }
+
+        const classes = Array.isArray(classesResponse.data)
+          ? (classesResponse.data as StudentClass[])
+          : [];
+
+        const map: Record<string, ClassInfo> = {};
+        classes.forEach((cls, index) => {
+          const classcode = cls.classcode_fld || cls.recno_fld?.toString();
+          if (!classcode) return;
+          map[classcode] = transformClassToInfo(cls, index);
+        });
+
+        if (isMounted) {
+          setClassInfoMap(map);
+        }
+      } catch (error) {
+        console.error('Error loading class info for notifications:', error);
+      } finally {
+        if (isMounted) {
+          setLoadingClasses(false);
+        }
+      }
+    };
+
+    fetchClassInfo();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Refresh on focus (but debounce to avoid conflicts with markAsRead)
   useFocusEffect(
@@ -95,16 +205,17 @@ export default function Notifications() {
     switch (type) {
       case 'post':
         if (post_id && classcode_fld) {
+          const classInfo = classInfoMap[classcode_fld];
           router.push({
             pathname: '/components/classes/class-details' as any,
             params: {
-              code: subjcode_fld || '',
+              code: classInfo?.code || subjcode_fld || '',
               classcode: classcode_fld,
-              name: subjdesc_fld || '',
-              instructor: '',
-              schedule: '',
-              time: '',
-              room: '',
+              name: classInfo?.name || subjdesc_fld || '',
+              instructor: classInfo?.instructor || '',
+              schedule: classInfo?.schedule || '',
+              time: classInfo?.time || '',
+              room: classInfo?.room || '',
               color: '#3b82f6',
               initialTab: 'feed',
               highlightPostId: post_id.toString(),
@@ -115,13 +226,14 @@ export default function Notifications() {
 
       case 'activity':
         if (activity_id && classcode_fld) {
+          const classInfo = classInfoMap[classcode_fld];
           router.push({
             pathname: '/components/classes/activities/activity-detail' as any,
             params: {
               activityId: activity_id.toString(),
               classcode: classcode_fld,
-              courseCode: subjcode_fld || '',
-              courseName: subjdesc_fld || '',
+              courseCode: classInfo?.code || subjcode_fld || '',
+              courseName: classInfo?.name || subjdesc_fld || '',
             },
           });
         }
@@ -129,16 +241,17 @@ export default function Notifications() {
 
       case 'resource':
         if (classcode_fld) {
+          const classInfo = classInfoMap[classcode_fld];
           router.push({
             pathname: '/components/classes/class-details' as any,
             params: {
-              code: subjcode_fld || '',
+              code: classInfo?.code || subjcode_fld || '',
               classcode: classcode_fld,
-              name: subjdesc_fld || '',
-              instructor: '',
-              schedule: '',
-              time: '',
-              room: '',
+              name: classInfo?.name || subjdesc_fld || '',
+              instructor: classInfo?.instructor || '',
+              schedule: classInfo?.schedule || '',
+              time: classInfo?.time || '',
+              room: classInfo?.room || '',
               color: '#3b82f6',
               initialTab: 'resources',
             },
@@ -225,6 +338,15 @@ export default function Notifications() {
       <View className="flex-1 items-center justify-center">
         <ActivityIndicator size="large" color="#4285F4" />
         <Text className="text-millionGrey mt-4">Loading notifications...</Text>
+      </View>
+    );
+  }
+
+  if (loadingClasses && Object.keys(classInfoMap).length === 0) {
+    return (
+      <View className="flex-1 items-center justify-center">
+        <ActivityIndicator size="large" color="#4285F4" />
+        <Text className="text-millionGrey mt-4">Loading classes...</Text>
       </View>
     );
   }
