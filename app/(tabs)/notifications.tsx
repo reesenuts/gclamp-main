@@ -3,8 +3,8 @@ import { Books, FolderSimple, Newspaper, Trash } from "phosphor-react-native";
 import { useCallback, useEffect, useState } from "react";
 import { ActionSheetIOS, ActivityIndicator, Alert, Platform, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import { useNotifications } from "../hooks/useNotifications";
-import { Notification } from "../services/notification.service";
 import { authService, generalService, lampService } from "../services";
+import { Notification } from "../services/notification.service";
 import { SettingsResponse, StudentClass } from "../types/api";
 
 type ClassInfo = {
@@ -260,12 +260,14 @@ export default function Notifications() {
 
   // Handle notification click
   const handleNotificationClick = async (notification: Notification) => {
-    // Mark as read
+    // Mark as read in the background (don't wait for it)
     if (notification.is_read === 0) {
-      await markAsRead(notification.id);
+      markAsRead(notification.id).catch((error) => {
+        console.error('Error marking notification as read:', error);
+      });
     }
 
-    // Navigate based on notification type
+    // Navigate immediately based on notification type
     const { type, classcode_fld, post_id, activity_id, resource_id, subjcode_fld, subjdesc_fld } = notification;
 
     switch (type) {
@@ -413,7 +415,7 @@ export default function Notifications() {
     return (
       <View className="flex-1 items-center justify-center">
         <ActivityIndicator size="large" color="#4285F4" />
-        <Text className="text-millionGrey mt-4">Loading classes...</Text>
+        <Text className="text-millionGrey mt-4">Loading notifications...</Text>
       </View>
     );
   }
