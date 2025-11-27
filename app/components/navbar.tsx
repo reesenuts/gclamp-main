@@ -3,6 +3,7 @@ import { Bell, Books, CalendarBlank, ChalkboardSimple, ChatTeardrop } from "phos
 import React, { useEffect, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useNotifications } from "../hooks/useNotifications";
+import { useUnreadMessages } from "../hooks/useUnreadMessages";
 
 type Routes = | "/todolist" | "/classes" | "/schedule" | "/notifications" | "/messages";
 
@@ -21,11 +22,11 @@ export default function BottomNav() {
   const pathname = usePathname();
   const [active, setActive] = useState<TabItem["name"]>("To-Do");
   const { unreadCount: unreadNotifications } = useNotifications();
+  const { unreadCount: unreadMessages } = useUnreadMessages();
 
-  // TODO: Get real counts for messages and todo when those features are implemented
   const badgeCounts = {
     notifications: unreadNotifications,
-    messages: 0, // Will be implemented when message notifications are added
+    messages: unreadMessages,
     todo: 0, // Will be implemented when todo notifications are added
   };
 
