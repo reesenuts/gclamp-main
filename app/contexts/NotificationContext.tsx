@@ -1,4 +1,4 @@
-import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { authService } from '../services';
 import { Notification, notificationService } from '../services/notification.service';
 import { subscribeNotificationUpdates } from '../utils/notificationEvents';
@@ -36,24 +36,51 @@ export const NotificationProvider = ({ children }: { children: ReactNode }) => {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const previousUserIdRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    let isMounted = true;
-    const fetchUser = async () => {
-      try {
-        const user = await authService.getCurrentUser();
-        if (user && isMounted) {
-          setCurrentUserId(user.id);
-        }
-      } catch (error) {
-        console.error('Error fetching user for notifications:', error);
+  // Check for user changes and update accordingly
+  const checkUserChange = useCallback(async () => {
+    try {
+      const user = await authService.getCurrentUser();
+      const newUserId = user?.id || null;
+      
+      // If user has changed, clear state and update
+      if (previousUserIdRef.current !== newUserId) {
+        // Clear notification state when user changes
+        setNotifications([]);
+        setUnreadCount(0);
+        previousUserIdRef.current = newUserId;
+        setCurrentUserId(newUserId);
+      } else if (currentUserId !== newUserId) {
+        // Update currentUserId if it's different (handles initial load)
+        setCurrentUserId(newUserId);
       }
-    };
-    fetchUser();
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+    } catch (error) {
+      console.error('Error checking user for notifications:', error);
+      // If user check fails, clear state
+      if (previousUserIdRef.current !== null) {
+        setNotifications([]);
+        setUnreadCount(0);
+        previousUserIdRef.current = null;
+        setCurrentUserId(null);
+      }
+    }
+  }, [currentUserId]);
+
+  // Initial user fetch
+  useEffect(() => {
+    checkUserChange();
+  }, [checkUserChange]);
+
+  // Periodically check for user changes (every 2 seconds) to catch account switches
+  // This ensures that when you switch accounts, the notification state is cleared and updated
+  useEffect(() => {
+    const interval = setInterval(() => {
+      checkUserChange();
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [checkUserChange]);
 
   const setNotificationState = useCallback((items: Notification[]) => {
     const unique = dedupeNotifications(items);
@@ -91,19 +118,31 @@ export const NotificationProvider = ({ children }: { children: ReactNode }) => {
 
   const markAsRead = useCallback(
     async (notificationId: number) => {
-      if (!currentUserId) return;
+      // Always get fresh user ID to ensure we're using the correct user
+      const user = await authService.getCurrentUser();
+      if (!user) {
+        console.error('Cannot mark notification as read: No user logged in');
+        return;
+      }
+      
+      const userId = user.id;
+      
       try {
+        // Optimistically update UI
         setNotifications((prev) =>
           prev.map((n) => (n.id === notificationId ? { ...n, is_read: 1 } : n))
         );
         setUnreadCount((prev) => Math.max(0, prev - 1));
-        await notificationService.markAsRead(currentUserId, notificationId);
+        
+        // Backend will validate that the notification belongs to this user
+        await notificationService.markAsRead(userId, notificationId);
       } catch (error) {
         console.error('Error marking notification as read:', error);
+        // Revert optimistic update on error
         fetchNotifications();
       }
     },
-    [currentUserId, fetchNotifications]
+    [fetchNotifications]
   );
 
   const markAllAsRead = useCallback(async () => {
